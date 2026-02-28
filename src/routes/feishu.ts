@@ -208,6 +208,16 @@ async function processPdfAndReply(env: MoltbotEnv, message: any) {
     }
 
     // 4. Summarize with LLM (Qwen-long supports document understanding via fileId)
+    const messages: any[] = [
+      { role: 'system', content: '你是一个专业的法律文件处理助手。请分析提供的文件并给出准确、专业的摘要和关键点提取，使用Markdown格式输出。' }
+    ];
+
+    for (const id of fileIds) {
+      messages.push({ role: 'system', content: `fileid://${id}` });
+    }
+
+    messages.push({ role: 'user', content: '请提取上述文件的关键信息，并生成一份简明扼要的摘要。如果有多个文件，请分别指出它们的核心内容，或综合给出分析。' });
+
     const llmRes = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -216,10 +226,7 @@ async function processPdfAndReply(env: MoltbotEnv, message: any) {
       },
       body: JSON.stringify({
         model: 'qwen-long',
-        messages: [
-          { role: 'system', content: '你是一个专业的法律文件处理助手。请分析提供的文件并给出准确、专业的摘要和关键点提取，使用Markdown格式输出。' },
-          { role: 'user', content: `${fileIds.map(id => `fileid://${id}`).join('\n')}\n\n请提取上述文件的关键信息，并生成一份简明扼要的摘要。如果有多个文件，请分别指出它们的核心内容，或综合给出分析。` }
-        ]
+        messages: messages
       })
     });
 
