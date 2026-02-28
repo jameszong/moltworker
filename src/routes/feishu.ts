@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import * as lark from '@larksuiteoapi/node-sdk';
 import type { AppEnv } from '../types';
 
 /**
@@ -8,23 +9,33 @@ export const feishu = new Hono<AppEnv>();
 
 feishu.post('/webhook', async (c) => {
   try {
-    const body = await c.req.json();
+    // Read the raw body text and parse it
+    const bodyText = await c.req.text();
+    const data = JSON.parse(bodyText);
+    
+    // Set up the event dispatcher with credentials from environment variables
+    const eventDispatcher = new lark.EventDispatcher({
+      encryptKey: '', // No encrypt key used currently
+      verificationToken: c.env.FEISHU_VERIFICATION_TOKEN || '',
+    }).register({
+      // We will handle specific events here later in Task 2
+      // 'im.message.receive_v1': async (data) => { ... }
+    });
 
-    // 1. URL Verification (Challenge)
-    if (body.type === 'url_verification') {
-      if (c.env.FEISHU_VERIFICATION_TOKEN && body.token !== c.env.FEISHU_VERIFICATION_TOKEN) {
-        console.error('[Feishu] Invalid verification token');
-        return c.json({ error: 'Invalid token' }, 403);
-      }
-      console.log('[Feishu] URL verification successful');
-      return c.json({ challenge: body.challenge });
+    // Invoke the dispatcher to handle Feishu's internal logic (including URL verification challenge)
+    // For URL verification, the SDK will validate the token and return { challenge: "..." }
+    const result = await eventDispatcher.invoke(data);
+    
+    // If the SDK returns an object with a challenge, return it back to Feishu
+    if (result && result.challenge) {
+      console.log('[Feishu SDK] Challenge successful');
+      return c.json(result);
     }
 
-    // 2. Handle Message events (placeholder for Task 2)
-    // We will return 200 OK for now to avoid Feishu retrying
+    // Default success response
     return c.json({ ok: true });
   } catch (error) {
-    console.error('[Feishu] Webhook processing error:', error);
+    console.error('[Feishu SDK] Webhook processing error:', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
