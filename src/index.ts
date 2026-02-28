@@ -152,6 +152,9 @@ app.route('/', publicRoutes);
 // Mount CDP routes (uses shared secret auth via query param, not CF Access)
 app.route('/cdp', cdp);
 
+// Mount feishu webhook routes (must be public to receive external events)
+app.route('/feishu', feishu);
+
 // =============================================================================
 // PROTECTED ROUTES: Cloudflare Access authentication required
 // =============================================================================
