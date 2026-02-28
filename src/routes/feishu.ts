@@ -9,6 +9,8 @@ export const feishu = new Hono<AppEnv>();
 feishu.post('/webhook', async (c) => {
   try {
     const bodyText = await c.req.text();
+    console.log('[Feishu] Incoming Webhook Body:', bodyText);
+    
     let data;
     try {
       data = JSON.parse(bodyText);
