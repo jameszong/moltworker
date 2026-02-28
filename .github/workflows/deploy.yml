@@ -35,8 +35,14 @@ jobs:
             MOLTBOT_GATEWAY_TOKEN
             CF_ACCESS_TEAM_DOMAIN
             CF_ACCESS_AUD
+            R2_ACCESS_KEY_ID
+            R2_SECRET_ACCESS_KEY
+            CF_ACCOUNT_ID
         env:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           MOLTBOT_GATEWAY_TOKEN: ${{ secrets.MOLTBOT_GATEWAY_TOKEN }}
           CF_ACCESS_TEAM_DOMAIN: ${{ secrets.CF_ACCESS_TEAM_DOMAIN }}
           CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
