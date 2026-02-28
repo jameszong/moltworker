@@ -159,7 +159,7 @@
 
       <div class="error-box">
         <h2>Missing Variables</h2>
-        <div class="missing-vars">{{MISSING_VARS}}</div>
+        <div class="missing-vars">ANTHROPIC_API_KEY, OPENAI_API_KEY, DASHSCOPE_API_KEY, or CLOUDFLARE_AI_GATEWAY_API_KEY + CF_AI_GATEWAY_ACCOUNT_ID + CF_AI_GATEWAY_GATEWAY_ID</div>
       </div>
 
       <div class="instructions">
@@ -167,7 +167,7 @@
         <p>Set the missing secrets using the Wrangler CLI:</p>
         <pre>wrangler secret put &lt;VARIABLE_NAME&gt;</pre>
         <p style="margin-top: 16px">
-          For example: <code>wrangler secret put ANTHROPIC_API_KEY</code>
+          For example: <code>wrangler secret put DASHSCOPE_API_KEY</code>
         </p>
         <p style="margin-bottom: 0">
           After setting the secrets, refresh this page to continue. See the
