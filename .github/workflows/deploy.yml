@@ -30,3 +30,13 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_KEY }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+          secrets: |
+            DASHSCOPE_API_KEY
+            MOLTBOT_GATEWAY_TOKEN
+            CF_ACCESS_TEAM_DOMAIN
+            CF_ACCESS_AUD
+        env:
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          MOLTBOT_GATEWAY_TOKEN: ${{ secrets.MOLTBOT_GATEWAY_TOKEN }}
+          CF_ACCESS_TEAM_DOMAIN: ${{ secrets.CF_ACCESS_TEAM_DOMAIN }}
+          CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}

@@ -114,6 +114,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
         AUTH_ARGS="--auth-choice apiKey --anthropic-api-key $ANTHROPIC_API_KEY"
     elif [ -n "$OPENAI_API_KEY" ]; then
         AUTH_ARGS="--auth-choice openai-api-key --openai-api-key $OPENAI_API_KEY"
+    elif [ -n "$DASHSCOPE_API_KEY" ]; then
+        AUTH_ARGS="--auth-choice openai-api-key --openai-api-key $DASHSCOPE_API_KEY"
     fi
 
     openclaw onboard --non-interactive --accept-risk \
@@ -173,6 +175,27 @@ if (process.env.OPENCLAW_DEV_MODE === 'true') {
 // ANTHROPIC_BASE_URL is picked up natively by the Anthropic SDK,
 // so we don't need to patch the provider config. Writing a provider
 // entry without a models array breaks OpenClaw's config validation.
+
+// DashScope configuration (Aliyun)
+if (process.env.DASHSCOPE_API_KEY) {
+    const defaultModel = process.env.DASHSCOPE_MODEL || 'qwen-plus';
+    config.models = config.models || {};
+    config.models.providers = config.models.providers || {};
+    config.models.providers.dashscope = {
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        apiKey: process.env.DASHSCOPE_API_KEY,
+        api: 'openai-completions',
+        models: [
+            { id: 'qwen-max', name: 'Qwen Max', contextWindow: 32768, maxTokens: 8192 },
+            { id: 'qwen-plus', name: 'Qwen Plus', contextWindow: 32768, maxTokens: 8192 },
+            { id: 'qwen-turbo', name: 'Qwen Turbo', contextWindow: 32768, maxTokens: 8192 }
+        ]
+    };
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.model = { primary: 'dashscope/' + defaultModel };
+    console.log('DashScope configured with default model: ' + defaultModel);
+}
 
 // AI Gateway model override (CF_AI_GATEWAY_MODEL=provider/model-id)
 // Adds a provider entry for any AI Gateway provider and sets it as default model.
