@@ -217,9 +217,6 @@ app.route('/api', api);
 // Mount admin routes under /_admin (protected by Cloudflare Access)
 app.route('/_admin', adminUi);
 
-// Mount feishu webhook routes
-app.route('/feishu', feishu);
-
 // Mount debug routes (protected by Cloudflare Access, only when DEBUG_ROUTES is enabled)
 app.use('/debug/*', async (c, next) => {
   if (c.env.DEBUG_ROUTES !== 'true') {
