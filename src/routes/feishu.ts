@@ -48,6 +48,19 @@ feishu.post('/webhook', async (c) => {
           // Kick off background task to process PDF without blocking the 3-second webhook timeout
           c.executionCtx.waitUntil(processPdfAndReply(c.env, message).catch(console.error));
         }
+      } else if (message.message_type === 'file') {
+        let contentObj;
+        try {
+          contentObj = JSON.parse(message.content);
+        } catch {
+          contentObj = {};
+        }
+        
+        const fileName = contentObj.file_name || 'unknown.pdf';
+        const fileKey = contentObj.file_key;
+        if (fileKey && fileName.toLowerCase().endsWith('.pdf')) {
+          c.executionCtx.waitUntil(downloadAndSaveFeishuFile(c.env, message.message_id, fileKey, fileName, message.chat_id).catch(console.error));
+        }
       }
     }
 
@@ -97,6 +110,32 @@ async function replyFeishuMessage(token: string, messageId: string, content: str
 }
 
 /**
+ * Download file from Feishu and save to R2
+ */
+async function downloadAndSaveFeishuFile(env: MoltbotEnv, messageId: string, fileKey: string, fileName: string, chatId: string) {
+  try {
+    const feishuToken = await getFeishuToken(env.FEISHU_APP_ID!, env.FEISHU_APP_SECRET!);
+    const res = await fetch(`https://open.feishu.cn/open-apis/im/v1/messages/${messageId}/resources/${fileKey}?type=file`, {
+      headers: { 'Authorization': `Bearer ${feishuToken}` }
+    });
+    
+    if (!res.ok) {
+      console.error(`Failed to download file from Feishu: ${res.status} ${res.statusText}`);
+      await replyFeishuMessage(feishuToken, messageId, `❌ 下载文件失败。`);
+      return;
+    }
+    
+    const arrayBuffer = await res.arrayBuffer();
+    const objectKey = `chat_data/${chatId}/${Date.now()}_${fileName}`;
+    await env.MOLTBOT_BUCKET.put(objectKey, arrayBuffer);
+    
+    await replyFeishuMessage(feishuToken, messageId, `✅ 文件 ${fileName} 已接收并暂存。\n请在上传完所有需处理的文件后，回复“整理 PDF”开始分析。`);
+  } catch (err) {
+    console.error('Error in downloadAndSaveFeishuFile:', err);
+  }
+}
+
+/**
  * Background task to process the latest PDF and reply via Feishu
  */
 async function processPdfAndReply(env: MoltbotEnv, message: any) {
@@ -115,50 +154,58 @@ async function processPdfAndReply(env: MoltbotEnv, message: any) {
   
   try {
     // 1. Send processing message
-    await replyFeishuMessage(feishuToken, message.message_id, '⏳ 收到请求，正在从 R2 获取最新 PDF 并分析，请稍候...');
+    await replyFeishuMessage(feishuToken, message.message_id, '⏳ 收到请求，正在提取当前对话中暂存的 PDF 并分析，请稍候...');
 
-    // 2. Get latest PDF from R2
-    const listed = await env.MOLTBOT_BUCKET.list();
+    // 2. Get PDFs for this chat from R2
+    const prefix = `chat_data/${message.chat_id}/`;
+    const listed = await env.MOLTBOT_BUCKET.list({ prefix });
     const pdfs = listed.objects.filter((o: any) => o.key.toLowerCase().endsWith('.pdf'));
     if (pdfs.length === 0) {
-      await replyFeishuMessage(feishuToken, message.message_id, '❌ 在 R2 存储桶 (moltbot-data) 中没有找到任何 PDF 文件。');
+      await replyFeishuMessage(feishuToken, message.message_id, '❌ 在当前对话中没有找到任何待处理的 PDF 文件。请先直接向我发送 PDF 文件。');
       return;
     }
 
-    // Sort by uploaded time descending to get the latest
-    pdfs.sort((a: any, b: any) => b.uploaded.getTime() - a.uploaded.getTime());
-    const latestPdf = pdfs[0];
-
-    const pdfObj = await env.MOLTBOT_BUCKET.get(latestPdf.key);
-    if (!pdfObj) throw new Error('Failed to read PDF from R2');
-    const pdfBuffer = await pdfObj.arrayBuffer();
+    // Sort by uploaded time to process in order
+    pdfs.sort((a: any, b: any) => a.uploaded.getTime() - b.uploaded.getTime());
 
     // 3. Upload to DashScope
     if (!env.DASHSCOPE_API_KEY) {
       throw new Error('DASHSCOPE_API_KEY 未配置');
     }
 
-    const formData = new FormData();
-    const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
-    formData.append('file', blob, latestPdf.key);
-    formData.append('purpose', 'file-extract');
+    const fileIds: string[] = [];
+    const fileNames: string[] = [];
 
-    const uploadRes = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/files', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${env.DASHSCOPE_API_KEY}`
-      },
-      body: formData
-    });
+    for (const pdf of pdfs) {
+      const pdfObj = await env.MOLTBOT_BUCKET.get(pdf.key);
+      if (!pdfObj) continue;
+      const pdfBuffer = await pdfObj.arrayBuffer();
 
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text();
-      throw new Error(`DashScope upload failed: ${errText}`);
+      const fileName = pdf.key.split('_').slice(1).join('_') || 'file.pdf'; // remove timestamp
+      fileNames.push(fileName);
+
+      const formData = new FormData();
+      const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
+      formData.append('file', blob, fileName);
+      formData.append('purpose', 'file-extract');
+
+      const uploadRes = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/files', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.DASHSCOPE_API_KEY}`
+        },
+        body: formData
+      });
+
+      if (!uploadRes.ok) {
+        const errText = await uploadRes.text();
+        throw new Error(`DashScope upload failed for ${fileName}: ${errText}`);
+      }
+
+      const uploadData = await uploadRes.json() as any;
+      if (!uploadData.id) throw new Error(`DashScope upload failed, no file ID returned for ${fileName}`);
+      fileIds.push(uploadData.id);
     }
-
-    const uploadData = await uploadRes.json() as any;
-    if (!uploadData.id) throw new Error('DashScope upload failed, no file ID returned.');
-    const fileId = uploadData.id;
 
     // 4. Summarize with LLM (Qwen-long supports document understanding via fileId)
     const llmRes = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
@@ -171,7 +218,7 @@ async function processPdfAndReply(env: MoltbotEnv, message: any) {
         model: 'qwen-long',
         messages: [
           { role: 'system', content: '你是一个专业的法律文件处理助手。请分析提供的文件并给出准确、专业的摘要和关键点提取，使用Markdown格式输出。' },
-          { role: 'user', content: `system://${fileId}\n请提取这份文档（${latestPdf.key}）的关键信息，并生成一份简明扼要的摘要。` }
+          { role: 'user', content: `${fileIds.map(id => `fileid://${id}`).join('\n')}\n\n请提取上述文件的关键信息，并生成一份简明扼要的摘要。如果有多个文件，请分别指出它们的核心内容，或综合给出分析。` }
         ]
       })
     });
@@ -193,7 +240,7 @@ async function processPdfAndReply(env: MoltbotEnv, message: any) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        title: `📄 摘要: ${latestPdf.key}`
+        title: `📄 分析报告: ${fileNames.join(', ').substring(0, 50)}${fileNames.join(', ').length > 50 ? '...' : ''}`
       })
     });
     
@@ -231,9 +278,14 @@ async function processPdfAndReply(env: MoltbotEnv, message: any) {
       // We don't fail completely here, we can still link the empty/partially complete doc
     }
 
-    // 6. Reply success
+    // 6. Delete processed files from R2
+    for (const pdf of pdfs) {
+      await env.MOLTBOT_BUCKET.delete(pdf.key);
+    }
+
+    // 7. Reply success
     const docUrl = `https://feishu.cn/docx/${documentId}`;
-    await replyFeishuMessage(feishuToken, message.message_id, `✅ 处理成功！\n\n📁 文件：${latestPdf.key}\n📄 摘要文档：${docUrl}`);
+    await replyFeishuMessage(feishuToken, message.message_id, `✅ 处理成功！\n\n📁 已处理文件：${fileNames.length} 份\n📄 分析报告：${docUrl}`);
 
   } catch (err) {
     console.error('Error processing PDF:', err);
