@@ -154,6 +154,8 @@ try {
 }
 
 config.gateway = config.gateway || {};
+config.gateway.controlUi = config.gateway.controlUi || {};
+config.gateway.controlUi.root = '/opt/openclaw/dist/control-ui';
 config.channels = config.channels || {};
 
 // Gateway configuration
