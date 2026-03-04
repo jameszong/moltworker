@@ -305,11 +305,6 @@ if (process.env.DASHSCOPE_API_KEY) {
     config.skills.entries['feishu-pdf-analyzer'] = {
         enabled: true
     };
-    if (!config.skills.allow) {
-        config.skills.allow = ['feishu-pdf-analyzer'];
-    } else if (!config.skills.allow.includes('feishu-pdf-analyzer')) {
-        config.skills.allow.push('feishu-pdf-analyzer');
-    }
 }
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
