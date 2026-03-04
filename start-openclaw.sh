@@ -283,6 +283,35 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     };
 }
 
+// Feishu configuration
+if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
+    config.channels.feishu = {
+        appId: process.env.FEISHU_APP_ID,
+        appSecret: process.env.FEISHU_APP_SECRET,
+        enabled: true,
+    };
+    if (process.env.FEISHU_ENCRYPT_KEY) {
+        config.channels.feishu.encryptKey = process.env.FEISHU_ENCRYPT_KEY;
+    }
+    if (process.env.FEISHU_VERIFICATION_TOKEN) {
+        config.channels.feishu.verificationToken = process.env.FEISHU_VERIFICATION_TOKEN;
+    }
+}
+
+// Feishu PDF Analyzer Skill
+if (process.env.DASHSCOPE_API_KEY) {
+    config.skills = config.skills || {};
+    config.skills.entries = config.skills.entries || {};
+    config.skills.entries['feishu-pdf-analyzer'] = {
+        enabled: true
+    };
+    if (!config.skills.allow) {
+        config.skills.allow = ['feishu-pdf-analyzer'];
+    } else if (!config.skills.allow.includes('feishu-pdf-analyzer')) {
+        config.skills.allow.push('feishu-pdf-analyzer');
+    }
+}
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
