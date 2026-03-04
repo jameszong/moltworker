@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
+import { ensureMoltbotGateway } from '../gateway';
 
 /**
  * Feishu Webhook routes
@@ -13,6 +14,9 @@ feishu.post('/webhook', async (c) => {
     if (!sandbox) {
       return c.json({ error: 'Sandbox not initialized' }, 500);
     }
+
+    // Ensure the container is awake and the OpenClaw process (including Feishu on port 3000) is ready
+    await ensureMoltbotGateway(sandbox, c.env);
 
     // Rewrite the URL to match the path expected by the OpenClaw Feishu adapter
     const originalUrl = new URL(c.req.url);
