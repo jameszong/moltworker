@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
-import { MOLTBOT_PORT } from '../config';
 
 /**
  * Feishu Webhook routes
@@ -22,10 +21,10 @@ feishu.post('/webhook', async (c) => {
 
     const containerReq = new Request(containerUrl.toString(), c.req.raw);
 
-    console.log('[Feishu] Proxying webhook to container...');
+    console.log('[Feishu] Proxying webhook to container port 3000...');
     
-    // Forward the request to the OpenClaw container
-    const containerRes = await sandbox.containerFetch(containerReq, MOLTBOT_PORT);
+    // Forward the request to the Feishu plugin's webhook server on port 3000
+    const containerRes = await sandbox.containerFetch(containerReq, 3000);
     
     // Return the response from OpenClaw (handles both url_verification and normal messages)
     return containerRes;

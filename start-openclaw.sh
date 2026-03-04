@@ -291,6 +291,9 @@ if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
         appId: process.env.FEISHU_APP_ID,
         appSecret: process.env.FEISHU_APP_SECRET,
         enabled: true,
+        connectionMode: "webhook",
+        webhookPort: 3000,
+        webhookPath: "/webhooks/feishu"
     };
     if (process.env.FEISHU_ENCRYPT_KEY) {
         config.channels.feishu.encryptKey = process.env.FEISHU_ENCRYPT_KEY;
