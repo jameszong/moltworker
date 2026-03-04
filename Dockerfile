@@ -26,7 +26,7 @@ RUN apt-get install -y git
 # Install custom OpenClaw from fork
 RUN git clone https://github.com/jameszong/openclaw.git /opt/openclaw
 WORKDIR /opt/openclaw
-RUN pnpm install && pnpm run build
+RUN pnpm install && pnpm run build && pnpm ui:build
 RUN npm link
 
 # Create OpenClaw directories
