@@ -15,6 +15,27 @@ feishu.post('/webhook', async (c) => {
       return c.json({ error: 'Sandbox not initialized' }, 500);
     }
 
+    // Intercept Feishu url_verification challenge at the edge
+    // This avoids needing to wake up the container or deal with Lark SDK routing quirks
+    try {
+      // Clone the request so we can read the body without consuming the stream
+      // if we end up needing to proxy it later
+      const reqClone = c.req.raw.clone();
+      
+      // Check content type to ensure it's JSON before parsing
+      const contentType = reqClone.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const body = await reqClone.json();
+        if (body && typeof body === 'object' && body.type === 'url_verification' && body.challenge) {
+          console.log('[Feishu] Intercepted url_verification challenge at the edge');
+          return c.json({ challenge: body.challenge });
+        }
+      }
+    } catch (e) {
+      // Ignore JSON parse errors, just fall through to proxy
+      console.log('[Feishu] Failed to parse request body for url_verification check, falling through to proxy', e);
+    }
+
     // Ensure the container is awake and the OpenClaw process (including Feishu on port 3000) is ready
     await ensureMoltbotGateway(sandbox, c.env);
 
