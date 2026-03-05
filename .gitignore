@@ -1,3 +1,6 @@
+# Cloudflare secrets
+.cloudflare/
+
 # Dependencies
 node_modules/
 
