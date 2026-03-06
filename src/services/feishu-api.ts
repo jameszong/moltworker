@@ -93,7 +93,7 @@ export async function sendFeishuMessage(env: MoltbotEnv, openId: string, text: s
   }
 
   try {
-    const response = await fetch('https://open.feishu.cn/open-apis/im/v1/messages', {
+    const response = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,

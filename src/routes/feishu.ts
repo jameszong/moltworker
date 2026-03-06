@@ -91,7 +91,7 @@ feishu.post('/webhook', async (c) => {
 });
 
 /**
- * Handle a Feishu message: call OpenClaw AI and send the response back
+ * Handle a Feishu message: call AI directly and send the response back
  */
 async function handleFeishuMessage(
   env: AppEnv['Bindings'],
@@ -100,42 +100,8 @@ async function handleFeishuMessage(
   userMessage: string,
 ): Promise<void> {
   try {
-    // Ensure the OpenClaw gateway is running
-    await ensureMoltbotGateway(sandbox, env);
-
-    // Call OpenClaw's gateway to process the message
-    const gatewayUrl = `http://localhost:${MOLTBOT_PORT}/v1/chat`;
-
-    const response = await sandbox.containerFetch(
-      new Request(gatewayUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: userMessage,
-          channel: 'feishu',
-          user_id: userOpenId,
-        }),
-      }),
-      MOLTBOT_PORT,
-    );
-
-    if (!response.ok) {
-      console.error('[Feishu] OpenClay gateway error:', response.status, response.statusText);
-      await sendFeishuMessage(env, userOpenId, '抱歉，我暂时无法处理您的消息，请稍后再试。');
-      return;
-    }
-
-    const data = (await response.json()) as { response?: string; error?: string };
-
-    if (data.error) {
-      console.error('[Feishu] OpenClaw returned error:', data.error);
-      await sendFeishuMessage(env, userOpenId, '抱歉，处理消息时出错了，请稍后再试。');
-      return;
-    }
-
-    const aiResponse = data.response || '抱歉，我没有生成回复。';
+    // Call AI directly using DashScope (Aliyun) API
+    const aiResponse = await callAI(env, userMessage);
 
     // Send the AI response back to the user
     const sent = await sendFeishuMessage(env, userOpenId, aiResponse);
@@ -152,5 +118,266 @@ async function handleFeishuMessage(
     } catch (sendError) {
       console.error('[Feishu] Failed to send error message:', sendError);
     }
+  }
+}
+
+/**
+ * Call AI API to generate response
+ * Supports DashScope (Aliyun) and Cloudflare AI Gateway
+ */
+async function callAI(env: AppEnv['Bindings'], message: string): Promise<string> {
+  // Try DashScope first (Aliyun)
+  if (env.DASHSCOPE_API_KEY) {
+    return await callDashScope(env.DASHSCOPE_API_KEY, env.DASHSCOPE_MODEL || 'qwen-plus', message);
+  }
+
+  // Fallback to Cloudflare AI Gateway if configured
+  if (env.CLOUDFLARE_AI_GATEWAY_API_KEY && env.CF_AI_GATEWAY_ACCOUNT_ID && env.CF_AI_GATEWAY_GATEWAY_ID) {
+    return await callCloudflareAIGateway(
+      env.CLOUDFLARE_AI_GATEWAY_API_KEY,
+      env.CF_AI_GATEWAY_ACCOUNT_ID,
+      env.CF_AI_GATEWAY_GATEWAY_ID,
+      env.CF_AI_GATEWAY_MODEL || 'openai/gpt-4o',
+      message,
+    );
+  }
+
+  // Try Anthropic if configured
+  if (env.ANTHROPIC_API_KEY) {
+    return await callAnthropic(env.ANTHROPIC_API_KEY, message);
+  }
+
+  // Try OpenAI if configured
+  if (env.OPENAI_API_KEY) {
+    return await callOpenAI(env.OPENAI_API_KEY, message);
+  }
+
+  return '抱歉，AI 服务未配置，无法处理您的消息。';
+}
+
+/**
+ * Call DashScope (Aliyun) API
+ */
+async function callDashScope(apiKey: string, model: string, message: string): Promise<string> {
+  try {
+    const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: message },
+        ],
+        max_tokens: 2000,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('[AI] DashScope API error:', response.status, response.statusText);
+      const errorText = await response.text();
+      console.error('[AI] DashScope error details:', errorText);
+      return '抱歉，AI 服务暂时不可用，请稍后再试。';
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+
+    if (data.error) {
+      console.error('[AI] DashScope error:', data.error);
+      return '抱歉，AI 处理消息时出错了。';
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return '抱歉，AI 没有生成回复。';
+    }
+
+    return content;
+  } catch (error) {
+    console.error('[AI] DashScope exception:', error);
+    return '抱歉，调用 AI 服务时发生错误。';
+  }
+}
+
+/**
+ * Call Cloudflare AI Gateway
+ */
+async function callCloudflareAIGateway(
+  apiKey: string,
+  accountId: string,
+  gatewayId: string,
+  model: string,
+  message: string,
+): Promise<string> {
+  try {
+    const slashIdx = model.indexOf('/');
+    const provider = slashIdx > 0 ? model.substring(0, slashIdx) : 'openai';
+    const modelId = slashIdx > 0 ? model.substring(slashIdx + 1) : model;
+
+    const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/${provider}`;
+    const isAnthropic = provider === 'anthropic';
+
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    };
+
+    let body: Record<string, unknown>;
+    if (isAnthropic) {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      body = {
+        model: modelId,
+        messages: [{ role: 'user', content: message }],
+        max_tokens: 2000,
+      };
+    } else {
+      body = {
+        model: modelId,
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: message },
+        ],
+        max_tokens: 2000,
+      };
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      console.error('[AI] Cloudflare AI Gateway error:', response.status, response.statusText);
+      return '抱歉，AI 服务暂时不可用，请稍后再试。';
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      content?: Array<{ text?: string }>;
+      error?: { message?: string };
+    };
+
+    if (data.error) {
+      console.error('[AI] Cloudflare AI Gateway error:', data.error);
+      return '抱歉，AI 处理消息时出错了。';
+    }
+
+    // Handle Anthropic format (content array)
+    if (data.content && Array.isArray(data.content)) {
+      return data.content.map((c) => c.text || '').join('');
+    }
+
+    // Handle OpenAI format (choices)
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return '抱歉，AI 没有生成回复。';
+    }
+
+    return content;
+  } catch (error) {
+    console.error('[AI] Cloudflare AI Gateway exception:', error);
+    return '抱歉，调用 AI 服务时发生错误。';
+  }
+}
+
+/**
+ * Call Anthropic API directly
+ */
+async function callAnthropic(apiKey: string, message: string): Promise<string> {
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        messages: [{ role: 'user', content: message }],
+        max_tokens: 2000,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('[AI] Anthropic API error:', response.status, response.statusText);
+      return '抱歉，AI 服务暂时不可用，请稍后再试。';
+    }
+
+    const data = (await response.json()) as {
+      content?: Array<{ text?: string }>;
+      error?: { message?: string };
+    };
+
+    if (data.error) {
+      console.error('[AI] Anthropic error:', data.error);
+      return '抱歉，AI 处理消息时出错了。';
+    }
+
+    const content = data.content?.map((c) => c.text || '').join('');
+    if (!content) {
+      return '抱歉，AI 没有生成回复。';
+    }
+
+    return content;
+  } catch (error) {
+    console.error('[AI] Anthropic exception:', error);
+    return '抱歉，调用 AI 服务时发生错误。';
+  }
+}
+
+/**
+ * Call OpenAI API directly
+ */
+async function callOpenAI(apiKey: string, message: string): Promise<string> {
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: message },
+        ],
+        max_tokens: 2000,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('[AI] OpenAI API error:', response.status, response.statusText);
+      return '抱歉，AI 服务暂时不可用，请稍后再试。';
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+
+    if (data.error) {
+      console.error('[AI] OpenAI error:', data.error);
+      return '抱歉，AI 处理消息时出错了。';
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return '抱歉，AI 没有生成回复。';
+    }
+
+    return content;
+  } catch (error) {
+    console.error('[AI] OpenAI exception:', error);
+    return '抱歉，调用 AI 服务时发生错误。';
   }
 }
