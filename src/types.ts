@@ -46,6 +46,8 @@ export interface MoltbotEnv {
   FEISHU_APP_ID?: string;
   FEISHU_APP_SECRET?: string;
   FEISHU_VERIFICATION_TOKEN?: string;
+  // KV namespace for conversation history
+  CONVERSATION_KV: KVNamespace;
   // Browser Rendering binding for CDP shim
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication

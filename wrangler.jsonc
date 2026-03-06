@@ -63,6 +63,18 @@
     },
   ],
 
+  // KV namespace for conversation history and session data
+  "kv_namespaces": [
+    {
+      "binding": "CONVERSATION_KV",
+      "id": "conversation_history",
+    },
+    {
+      "binding": "FEISHU_KV",
+      "id": "feishu_config",
+    },
+  ],
+
   // Browser Rendering binding for CDP shim
   "browser": {
     "binding": "BROWSER",

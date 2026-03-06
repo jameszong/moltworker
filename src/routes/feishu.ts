@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { ensureMoltbotGateway } from '../gateway';
-import { sendFeishuMessage } from '../services/feishu-api';
+import { sendFeishuMessage, getTenantAccessToken } from '../services/feishu-api';
 import puppeteer from '@cloudflare/puppeteer';
 
 /**
@@ -22,6 +22,31 @@ const TOOLS = [
           },
         },
         required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'create_feishu_doc',
+      description: '创建飞书文档。当用户要求将内容保存为飞书文档、生成文档或创建文档时使用此工具。',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          title: {
+            type: 'string' as const,
+            description: '文档标题',
+          },
+          content: {
+            type: 'string' as const,
+            description: '文档内容（支持Markdown格式）',
+          },
+          folder_token: {
+            type: 'string' as const,
+            description: '可选的文件夹token，用于指定文档保存位置',
+          },
+        },
+        required: ['title', 'content'],
       },
     },
   },
@@ -144,6 +169,7 @@ async function handleFeishuMessageWithTimeout(
 
 /**
  * Handle a Feishu message: call AI with tool support and send the response back
+ * Supports multi-turn conversation with KV storage
  */
 async function handleFeishuMessage(
   env: AppEnv['Bindings'],
@@ -151,14 +177,34 @@ async function handleFeishuMessage(
   userMessage: string,
 ): Promise<void> {
   try {
-    // Build conversation with tool support
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      { role: 'system', content: '你是一个 helpful assistant。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。' },
-      { role: 'user', content: userMessage },
-    ];
+    // Load conversation history from KV
+    const conversationKey = `feishu:conversation:${userOpenId}`;
+    let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+    
+    try {
+      const history = await env.CONVERSATION_KV.get(conversationKey);
+      if (history) {
+        messages = JSON.parse(history);
+        console.log(`[Feishu] Loaded conversation history for ${userOpenId}, ${messages.length} messages`);
+      }
+    } catch (kvError) {
+      console.error('[Feishu] Failed to load conversation history:', kvError);
+    }
+
+    // If no history, start fresh with system prompt
+    if (messages.length === 0) {
+      messages = [
+        { role: 'system', content: '你是一个 helpful assistant。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。如果用户要求创建飞书文档，请使用 create_feishu_doc 工具。记住对话上下文，用户可以基于之前的内容继续提问。' },
+      ];
+    }
+
+    // Add user message
+    messages.push({ role: 'user', content: userMessage });
 
     // Call AI with tool support (up to 3 tool call rounds)
     let finalResponse = '';
+    let toolResults: Array<{ toolName: string; result: string }> = [];
+    
     for (let round = 0; round < 3; round++) {
       // Use timeout wrapper for Paid Plan longer execution
       const result = await callAIWithToolsTimeout(env, messages, TOOLS, 30000);
@@ -176,11 +222,24 @@ async function handleFeishuMessage(
             console.log(`[Tool] web_scrape: ${args.url}`);
             
             const scrapeResult = await executeWebScrape(env, args.url);
+            toolResults.push({ toolName: 'web_scrape', result: scrapeResult });
             
             // Add tool result to conversation
             messages.push(
               { role: 'assistant', content: `我将抓取网页: ${args.url}` },
               { role: 'user', content: `[网页抓取结果]\n${scrapeResult}` },
+            );
+          } else if (toolCall.function.name === 'create_feishu_doc') {
+            const args = JSON.parse(toolCall.function.arguments);
+            console.log(`[Tool] create_feishu_doc: ${args.title}`);
+            
+            const docResult = await executeCreateFeishuDoc(env, args.title, args.content, args.folder_token);
+            toolResults.push({ toolName: 'create_feishu_doc', result: docResult });
+            
+            // Add tool result to conversation
+            messages.push(
+              { role: 'assistant', content: `我将创建飞书文档: ${args.title}` },
+              { role: 'user', content: `[创建飞书文档结果]\n${docResult}` },
             );
           }
         }
@@ -189,6 +248,20 @@ async function handleFeishuMessage(
 
     if (!finalResponse) {
       finalResponse = '抱歉，处理您的请求时出现了问题。';
+    }
+
+    // Add assistant response to conversation
+    messages.push({ role: 'assistant', content: finalResponse });
+
+    // Save conversation history to KV (keep last 20 messages to avoid size limits)
+    try {
+      const trimmedMessages = messages.slice(-20);
+      await env.CONVERSATION_KV.put(conversationKey, JSON.stringify(trimmedMessages), {
+        expirationTtl: 86400, // 24 hours
+      });
+      console.log(`[Feishu] Saved conversation history for ${userOpenId}`);
+    } catch (kvError) {
+      console.error('[Feishu] Failed to save conversation history:', kvError);
     }
 
     // Send the AI response back to the user
@@ -399,6 +472,116 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
   } catch (error) {
     console.error('[WebScrape] Error:', error);
     return `抓取网页时出错: ${error instanceof Error ? error.message : '未知错误'}`;
+  }
+}
+
+/**
+ * Execute create Feishu document tool
+ */
+async function executeCreateFeishuDoc(
+  env: AppEnv['Bindings'],
+  title: string,
+  content: string,
+  folderToken?: string,
+): Promise<string> {
+  try {
+    console.log(`[FeishuDoc] Creating document: ${title}`);
+    
+    const token = await getTenantAccessToken(env);
+    if (!token) {
+      return '错误: 无法获取飞书访问令牌，请检查 FEISHU_APP_ID 和 FEISHU_APP_SECRET 配置。';
+    }
+
+    // Create document
+    const createUrl = 'https://open.feishu.cn/open-apis/docx/v1/documents';
+    const createBody: Record<string, unknown> = {
+      title: title,
+    };
+    if (folderToken) {
+      createBody.folder_token = folderToken;
+    }
+
+    const createResponse = await fetch(createUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(createBody),
+    });
+
+    if (!createResponse.ok) {
+      console.error('[FeishuDoc] Failed to create document:', createResponse.status, createResponse.statusText);
+      const errorText = await createResponse.text();
+      console.error('[FeishuDoc] Error details:', errorText);
+      return `创建飞书文档失败: ${createResponse.status} ${createResponse.statusText}`;
+    }
+
+    const createData = (await createResponse.json()) as {
+      code?: number;
+      msg?: string;
+      data?: {
+        document?: {
+          document_id: string;
+          title: string;
+          url?: string;
+        };
+      };
+    };
+
+    if (createData.code !== 0) {
+      console.error('[FeishuDoc] API error:', createData.msg);
+      return `创建飞书文档失败: ${createData.msg || '未知错误'}`;
+    }
+
+    const documentId = createData.data?.document?.document_id;
+    const documentUrl = createData.data?.document?.url || `https://docs.feishu.cn/docx/${documentId}`;
+
+    if (!documentId) {
+      return '错误: 无法获取文档ID';
+    }
+
+    console.log(`[FeishuDoc] Document created: ${documentId}`);
+
+    // Add content to document (convert markdown-like content to blocks)
+    // For simplicity, we'll add the content as a single text block
+    const blocksUrl = `https://open.feishu.cn/open-apis/docx/v1/documents/${documentId}/blocks`;
+    const blocksResponse = await fetch(blocksUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        children: [
+          {
+            block_type: 2, // Text block
+            text: {
+              elements: [
+                {
+                  text_run: {
+                    content: content,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    if (!blocksResponse.ok) {
+      console.error('[FeishuDoc] Failed to add content:', blocksResponse.status, blocksResponse.statusText);
+      // Document was created but content failed, still return document URL
+      return `飞书文档已创建: ${documentUrl}\n\n但添加内容时出错。您可以手动编辑文档添加内容。`;
+    }
+
+    console.log(`[FeishuDoc] Content added to document: ${documentId}`);
+    
+    return `✅ 飞书文档已成功创建！\n\n📄 标题: ${title}\n🔗 链接: ${documentUrl}\n\n文档已包含抓取的内容，您可以直接查看和编辑。`;
+  } catch (error) {
+    console.error('[FeishuDoc] Error:', error);
+    return `创建飞书文档时出错: ${error instanceof Error ? error.message : '未知错误'}`;
   }
 }
 
