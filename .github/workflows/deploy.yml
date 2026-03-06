@@ -33,6 +33,11 @@ jobs:
       - name: Build project
         run: npm run build
 
+      - name: Inject KV Namespace ID
+        run: |
+          sed -i 's/"id": "conversation_history"/"id": "${{ secrets.CONVERSATION_KV_ID }}"/g' wrangler.jsonc
+          echo "KV Namespace ID injected"
+
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
