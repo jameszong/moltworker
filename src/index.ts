@@ -83,7 +83,13 @@ function validateRequiredEnv(env: MoltbotEnv): string[] {
   const hasOpenAIKey = !!env.OPENAI_API_KEY;
   const hasDashScopeKey = !!env.DASHSCOPE_API_KEY;
 
-  if (!hasCloudflareGateway && !hasLegacyGateway && !hasAnthropicKey && !hasOpenAIKey && !hasDashScopeKey) {
+  if (
+    !hasCloudflareGateway &&
+    !hasLegacyGateway &&
+    !hasAnthropicKey &&
+    !hasOpenAIKey &&
+    !hasDashScopeKey
+  ) {
     missing.push(
       'ANTHROPIC_API_KEY, OPENAI_API_KEY, DASHSCOPE_API_KEY, or CLOUDFLARE_AI_GATEWAY_API_KEY + CF_AI_GATEWAY_ACCOUNT_ID + CF_AI_GATEWAY_GATEWAY_ID',
     );

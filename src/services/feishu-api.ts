@@ -40,19 +40,26 @@ export async function getTenantAccessToken(env: MoltbotEnv): Promise<string | nu
   }
 
   try {
-    const response = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          app_id: appId,
+          app_secret: appSecret,
+        }),
       },
-      body: JSON.stringify({
-        app_id: appId,
-        app_secret: appSecret,
-      }),
-    });
+    );
 
     if (!response.ok) {
-      console.error('[Feishu] Failed to get tenant access token:', response.status, response.statusText);
+      console.error(
+        '[Feishu] Failed to get tenant access token:',
+        response.status,
+        response.statusText,
+      );
       return null;
     }
 
@@ -85,7 +92,11 @@ export async function getTenantAccessToken(env: MoltbotEnv): Promise<string | nu
  * @param text - The message text to send
  * @returns true if message was sent successfully
  */
-export async function sendFeishuMessage(env: MoltbotEnv, openId: string, text: string): Promise<boolean> {
+export async function sendFeishuMessage(
+  env: MoltbotEnv,
+  openId: string,
+  text: string,
+): Promise<boolean> {
   const token = await getTenantAccessToken(env);
   if (!token) {
     console.error('[Feishu] Cannot send message: no valid token');
@@ -93,20 +104,23 @@ export async function sendFeishuMessage(env: MoltbotEnv, openId: string, text: s
   }
 
   try {
-    const response = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        receive_id: openId,
-        msg_type: 'text',
-        content: JSON.stringify({
-          text: text,
+    const response = await fetch(
+      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          receive_id: openId,
+          msg_type: 'text',
+          content: JSON.stringify({
+            text: text,
+          }),
         }),
-      }),
-    });
+      },
+    );
 
     if (!response.ok) {
       console.error('[Feishu] Failed to send message:', response.status, response.statusText);

@@ -107,7 +107,12 @@ feishu.post('/webhook', async (c) => {
       // Return HTTP 200 immediately to avoid Feishu retry
       // The AI response will be sent asynchronously
       // Use waitUntil with a timeout wrapper for Paid Plan longer execution
-      const processingPromise = handleFeishuMessageWithTimeout(c.env, openId || unionId || '', textContent, 55000);
+      const processingPromise = handleFeishuMessageWithTimeout(
+        c.env,
+        openId || unionId || '',
+        textContent,
+        55000,
+      );
       c.executionCtx.waitUntil(processingPromise);
 
       return c.body(null, 200);
@@ -152,10 +157,7 @@ async function handleFeishuMessageWithTimeout(
   });
 
   try {
-    await Promise.race([
-      handleFeishuMessage(env, userOpenId, userMessage),
-      timeoutPromise,
-    ]);
+    await Promise.race([handleFeishuMessage(env, userOpenId, userMessage), timeoutPromise]);
   } catch (error) {
     console.error('[Feishu] Message processing timed out or failed:', error);
     // Send timeout message to user
@@ -180,12 +182,14 @@ async function handleFeishuMessage(
     // Load conversation history from KV
     const conversationKey = `feishu:conversation:${userOpenId}`;
     let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-    
+
     try {
       const history = await env.CONVERSATION_KV.get(conversationKey);
       if (history) {
         messages = JSON.parse(history);
-        console.log(`[Feishu] Loaded conversation history for ${userOpenId}, ${messages.length} messages`);
+        console.log(
+          `[Feishu] Loaded conversation history for ${userOpenId}, ${messages.length} messages`,
+        );
       }
     } catch (kvError) {
       console.error('[Feishu] Failed to load conversation history:', kvError);
@@ -194,7 +198,11 @@ async function handleFeishuMessage(
     // If no history, start fresh with system prompt
     if (messages.length === 0) {
       messages = [
-        { role: 'system', content: '你是一个 helpful assistant。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。如果用户要求创建飞书文档，请使用 create_feishu_doc 工具。记住对话上下文，用户可以基于之前的内容继续提问。' },
+        {
+          role: 'system',
+          content:
+            '你是一个 helpful assistant。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。如果用户要求创建飞书文档，请使用 create_feishu_doc 工具。记住对话上下文，用户可以基于之前的内容继续提问。',
+        },
       ];
     }
 
@@ -204,26 +212,26 @@ async function handleFeishuMessage(
     // Call AI with tool support (up to 3 tool call rounds)
     let finalResponse = '';
     let toolResults: Array<{ toolName: string; result: string }> = [];
-    
+
     for (let round = 0; round < 3; round++) {
       // Use timeout wrapper for Paid Plan longer execution
       const result = await callAIWithToolsTimeout(env, messages, TOOLS, 30000);
-      
+
       if (result.type === 'message') {
         finalResponse = result.content;
         break;
       }
-      
+
       if (result.type === 'tool_calls') {
         // Execute tools and add results to conversation
         for (const toolCall of result.toolCalls) {
           if (toolCall.function.name === 'web_scrape') {
             const args = JSON.parse(toolCall.function.arguments);
             console.log(`[Tool] web_scrape: ${args.url}`);
-            
+
             const scrapeResult = await executeWebScrape(env, args.url);
             toolResults.push({ toolName: 'web_scrape', result: scrapeResult });
-            
+
             // Add tool result to conversation
             messages.push(
               { role: 'assistant', content: `我将抓取网页: ${args.url}` },
@@ -232,10 +240,15 @@ async function handleFeishuMessage(
           } else if (toolCall.function.name === 'create_feishu_doc') {
             const args = JSON.parse(toolCall.function.arguments);
             console.log(`[Tool] create_feishu_doc: ${args.title}`);
-            
-            const docResult = await executeCreateFeishuDoc(env, args.title, args.content, args.folder_token);
+
+            const docResult = await executeCreateFeishuDoc(
+              env,
+              args.title,
+              args.content,
+              args.folder_token,
+            );
             toolResults.push({ toolName: 'create_feishu_doc', result: docResult });
-            
+
             // Add tool result to conversation
             messages.push(
               { role: 'assistant', content: `我将创建飞书文档: ${args.title}` },
@@ -294,10 +307,10 @@ interface ToolCall {
  * Call AI API with timeout (with tool support)
  */
 async function callAIWithToolsTimeout(
-  env: AppEnv['Bindings'], 
+  env: AppEnv['Bindings'],
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
   tools: typeof TOOLS,
-  timeoutMs: number
+  timeoutMs: number,
 ): Promise<{ type: 'message'; content: string } | { type: 'tool_calls'; toolCalls: ToolCall[] }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -331,7 +344,13 @@ async function callAIWithTools(
 ): Promise<{ type: 'message'; content: string } | { type: 'tool_calls'; toolCalls: ToolCall[] }> {
   // Priority 3: DashScope (Aliyun) - supports function calling
   if (env.DASHSCOPE_API_KEY) {
-    return await callDashScopeWithTools(env.DASHSCOPE_API_KEY, env.DASHSCOPE_MODEL || 'qwen-plus', messages, tools, signal);
+    return await callDashScopeWithTools(
+      env.DASHSCOPE_API_KEY,
+      env.DASHSCOPE_MODEL || 'qwen-plus',
+      messages,
+      tools,
+      signal,
+    );
   }
 
   // Fallback: regular call without tools
@@ -351,20 +370,23 @@ async function callDashScopeWithTools(
   signal?: AbortSignal,
 ): Promise<{ type: 'message'; content: string } | { type: 'tool_calls'; toolCalls: ToolCall[] }> {
   try {
-    const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: messages,
+          tools: tools,
+          max_tokens: 2000,
+        }),
+        signal,
       },
-      body: JSON.stringify({
-        model: model,
-        messages: messages,
-        tools: tools,
-        max_tokens: 2000,
-      }),
-      signal,
-    });
+    );
 
     if (!response.ok) {
       console.error('[AI] DashScope API error:', response.status, response.statusText);
@@ -419,17 +441,17 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
 
   try {
     console.log(`[WebScrape] Starting to scrape: ${url}`);
-    
+
     // Launch browser using puppeteer
     const browser = await puppeteer.launch(env.BROWSER);
     const page = await browser.newPage();
-    
+
     // Navigate to URL with timeout
-    await page.goto(url, { 
+    await page.goto(url, {
       waitUntil: 'networkidle2',
-      timeout: 30000 
+      timeout: 30000,
     });
-    
+
     // Get page content
     const title = await page.title();
     const content = await page.evaluate(() => {
@@ -442,9 +464,9 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
         '.post-content',
         '.entry-content',
         '#content',
-        'body'
+        'body',
       ];
-      
+
       for (const selector of selectors) {
         const element = document.querySelector(selector) as HTMLElement | null;
         if (element) {
@@ -453,21 +475,21 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
             .replace(/\s+/g, ' ')
             .replace(/\n\s*\n/g, '\n')
             .trim();
-          
+
           if (text.length > 100) {
             return text.substring(0, 8000); // Limit content length
           }
         }
       }
-      
+
       return document.body.innerText.substring(0, 8000);
     });
-    
+
     await browser.close();
-    
+
     const result = `标题: ${title}\n\n内容:\n${content}`;
     console.log(`[WebScrape] Successfully scraped ${url}, content length: ${content.length}`);
-    
+
     return result;
   } catch (error) {
     console.error('[WebScrape] Error:', error);
@@ -486,7 +508,7 @@ async function executeCreateFeishuDoc(
 ): Promise<string> {
   try {
     console.log(`[FeishuDoc] Creating document: ${title}`);
-    
+
     const token = await getTenantAccessToken(env);
     if (!token) {
       return '错误: 无法获取飞书访问令牌，请检查 FEISHU_APP_ID 和 FEISHU_APP_SECRET 配置。';
@@ -504,14 +526,18 @@ async function executeCreateFeishuDoc(
     const createResponse = await fetch(createUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(createBody),
     });
 
     if (!createResponse.ok) {
-      console.error('[FeishuDoc] Failed to create document:', createResponse.status, createResponse.statusText);
+      console.error(
+        '[FeishuDoc] Failed to create document:',
+        createResponse.status,
+        createResponse.statusText,
+      );
       const errorText = await createResponse.text();
       console.error('[FeishuDoc] Error details:', errorText);
       return `创建飞书文档失败: ${createResponse.status} ${createResponse.statusText}`;
@@ -535,7 +561,8 @@ async function executeCreateFeishuDoc(
     }
 
     const documentId = createData.data?.document?.document_id;
-    const documentUrl = createData.data?.document?.url || `https://docs.feishu.cn/docx/${documentId}`;
+    const documentUrl =
+      createData.data?.document?.url || `https://docs.feishu.cn/docx/${documentId}`;
 
     if (!documentId) {
       return '错误: 无法获取文档ID';
@@ -549,7 +576,7 @@ async function executeCreateFeishuDoc(
     const blocksResponse = await fetch(blocksUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -571,13 +598,17 @@ async function executeCreateFeishuDoc(
     });
 
     if (!blocksResponse.ok) {
-      console.error('[FeishuDoc] Failed to add content:', blocksResponse.status, blocksResponse.statusText);
+      console.error(
+        '[FeishuDoc] Failed to add content:',
+        blocksResponse.status,
+        blocksResponse.statusText,
+      );
       // Document was created but content failed, still return document URL
       return `飞书文档已创建: ${documentUrl}\n\n但添加内容时出错。您可以手动编辑文档添加内容。`;
     }
 
     console.log(`[FeishuDoc] Content added to document: ${documentId}`);
-    
+
     return `✅ 飞书文档已成功创建！\n\n📄 标题: ${title}\n🔗 链接: ${documentUrl}\n\n文档已包含抓取的内容，您可以直接查看和编辑。`;
   } catch (error) {
     console.error('[FeishuDoc] Error:', error);
@@ -589,14 +620,27 @@ async function executeCreateFeishuDoc(
  * Call AI API to generate response
  * Supports DashScope (Aliyun) and Cloudflare AI Gateway
  */
-async function callAI(env: AppEnv['Bindings'], message: string, signal?: AbortSignal): Promise<string> {
+async function callAI(
+  env: AppEnv['Bindings'],
+  message: string,
+  signal?: AbortSignal,
+): Promise<string> {
   // Priority 1: Use Cloudflare Workers AI (fastest, no external API call)
   if (env.CF_AI_ACCOUNT_ID && env.CF_AI_API_TOKEN) {
-    return await callCloudflareWorkersAI(env.CF_AI_ACCOUNT_ID, env.CF_AI_API_TOKEN, message, signal);
+    return await callCloudflareWorkersAI(
+      env.CF_AI_ACCOUNT_ID,
+      env.CF_AI_API_TOKEN,
+      message,
+      signal,
+    );
   }
 
   // Priority 2: Cloudflare AI Gateway
-  if (env.CLOUDFLARE_AI_GATEWAY_API_KEY && env.CF_AI_GATEWAY_ACCOUNT_ID && env.CF_AI_GATEWAY_GATEWAY_ID) {
+  if (
+    env.CLOUDFLARE_AI_GATEWAY_API_KEY &&
+    env.CF_AI_GATEWAY_ACCOUNT_ID &&
+    env.CF_AI_GATEWAY_GATEWAY_ID
+  ) {
     return await callCloudflareAIGateway(
       env.CLOUDFLARE_AI_GATEWAY_API_KEY,
       env.CF_AI_GATEWAY_ACCOUNT_ID,
@@ -609,7 +653,12 @@ async function callAI(env: AppEnv['Bindings'], message: string, signal?: AbortSi
 
   // Priority 3: DashScope (Aliyun)
   if (env.DASHSCOPE_API_KEY) {
-    return await callDashScope(env.DASHSCOPE_API_KEY, env.DASHSCOPE_MODEL || 'qwen-plus', message, signal);
+    return await callDashScope(
+      env.DASHSCOPE_API_KEY,
+      env.DASHSCOPE_MODEL || 'qwen-plus',
+      message,
+      signal,
+    );
   }
 
   // Priority 4: Anthropic
@@ -640,7 +689,7 @@ async function callCloudflareWorkersAI(
       {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiToken}`,
+          Authorization: `Bearer ${apiToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -685,24 +734,32 @@ async function callCloudflareWorkersAI(
 /**
  * Call DashScope (Aliyun) API
  */
-async function callDashScope(apiKey: string, model: string, message: string, signal?: AbortSignal): Promise<string> {
+async function callDashScope(
+  apiKey: string,
+  model: string,
+  message: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
-    const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: 'system', content: 'You are a helpful assistant.' },
+            { role: 'user', content: message },
+          ],
+          max_tokens: 2000,
+        }),
+        signal,
       },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          { role: 'system', content: 'You are a helpful assistant.' },
-          { role: 'user', content: message },
-        ],
-        max_tokens: 2000,
-      }),
-      signal,
-    });
+    );
 
     if (!response.ok) {
       console.error('[AI] DashScope API error:', response.status, response.statusText);
@@ -758,7 +815,7 @@ async function callCloudflareAIGateway(
     const isWorkersAI = provider === 'workers-ai';
 
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     };
 
@@ -844,7 +901,11 @@ async function callCloudflareAIGateway(
 /**
  * Call Anthropic API directly
  */
-async function callAnthropic(apiKey: string, message: string, signal?: AbortSignal): Promise<string> {
+async function callAnthropic(
+  apiKey: string,
+  message: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -899,7 +960,7 @@ async function callOpenAI(apiKey: string, message: string, signal?: AbortSignal)
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
