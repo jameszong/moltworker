@@ -988,7 +988,7 @@ async function executeCreateFeishuDoc(
 
     const documentId = createData.data?.document?.document_id;
     const documentUrl =
-      createData.data?.document?.url || `https://docs.feishu.cn/docx/${documentId}`;
+      createData.data?.document?.url || `https://feishu.cn/docx/${documentId}`;
 
     if (!documentId) {
       return '错误: 无法获取文档ID';
@@ -1036,66 +1036,8 @@ async function executeCreateFeishuDoc(
 
     console.log(`[FeishuDoc] Content added to document: ${documentId}`);
     
-    // Set document public permissions so everyone in the tenant can edit
-    try {
-      // Use Drive v2 public permission API
-      const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${documentId}/public?type=docx`;
-      const permResponse = await fetch(permUrl, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          external_access: true,
-          security_entity: 'anyone_can_view',
-          share_entity: 'anyone',
-          link_share_entity: 'anyone_editable',
-          invite_external: true
-        }),
-      });
-      
-      if (!permResponse.ok) {
-        const errText = await permResponse.text();
-        console.error(`[FeishuDoc] Failed to update permissions for ${documentId}:`, errText);
-      } else {
-        console.log(`[FeishuDoc] Successfully granted public permissions to ${documentId}`);
-      }
-    } catch (permError) {
-      console.error('[FeishuDoc] Failed to grant public permissions:', permError);
-    }
-
-    // Add explicit member permission if userOpenId provided
-    if (userOpenId) {
-      try {
-        // Use Drive v2 permission member API with correct parameters
-        const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${documentId}/members?type=docx`;
-        const memberResponse = await fetch(memberUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            members: [
-              {
-                member_type: 'user',
-                member_id: userOpenId,
-                perm: 'full_access'
-              }
-            ]
-          }),
-        });
-        if (memberResponse.ok) {
-          console.log(`[FeishuDoc] Granted explicit full_access permission to user: ${userOpenId}`);
-        } else {
-          const errData = await memberResponse.json().catch(() => null);
-          console.error(`[FeishuDoc] Failed to grant member permission:`, memberResponse.status, errData);
-        }
-      } catch (memberErr) {
-        console.error('[FeishuDoc] Failed to grant member permission:', memberErr);
-      }
-    }
+    // Note: Document permissions are handled separately via fix-docs endpoint if needed
+    // The document creator (this app) has full access by default
 
     return `✅ 飞书文档已成功创建！\n\n📄 标题: ${title}\n🔗 链接: ${documentUrl}\n\n文档已包含抓取的内容，您可以直接查看和编辑。`;
   } catch (error) {
