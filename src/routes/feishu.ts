@@ -197,11 +197,11 @@ async function handleFeishuMessage(
 
     // If no history, start fresh with system prompt
     if (messages.length === 0) {
+      const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
       messages = [
         {
           role: 'system',
-          content:
-            '你是一个 helpful assistant。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。如果用户要求创建飞书文档，请使用 create_feishu_doc 工具。记住对话上下文，用户可以基于之前的内容继续提问。',
+          content: `你是一个 helpful assistant。你当前的运行时间由系统实时提供，现在是 ${now}。请优先参考此时间。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。如果用户要求创建飞书文档，请使用 create_feishu_doc 工具。记住对话上下文，用户可以基于之前的内容继续提问。`,
         },
       ];
     }
@@ -572,7 +572,8 @@ async function executeCreateFeishuDoc(
 
     // Add content to document (convert markdown-like content to blocks)
     // For simplicity, we'll add the content as a single text block
-    const blocksUrl = `https://open.feishu.cn/open-apis/docx/v1/documents/${documentId}/blocks`;
+    // Note: The parent block ID for the document root is the document_id itself
+    const blocksUrl = `https://open.feishu.cn/open-apis/docx/v1/documents/${documentId}/blocks/${documentId}/children`;
     const blocksResponse = await fetch(blocksUrl, {
       method: 'POST',
       headers: {
