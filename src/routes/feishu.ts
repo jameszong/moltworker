@@ -190,19 +190,19 @@ feishu.get('/fix-docs', async (c) => {
             },
             body: JSON.stringify({
               token: docId,
-              type: 'doc',
+              type: 'docx',
               members: [
                 {
-                  member_type: 'openid',
+                  member_type: 'user',
                   member_id: userOpenId,
-                  perm: 'edit'
+                  perm: 'full_access'
                 }
               ]
             }),
           });
           memberResult = await memberResponse.json();
-        } catch (memberErr) {
-          memberResult = { error: memberErr.message };
+        } catch (memberErr: unknown) {
+          memberResult = { error: memberErr instanceof Error ? memberErr.message : 'Unknown error' };
         }
       }
       
@@ -292,10 +292,10 @@ feishu.get('/fix-doc-single', async (c) => {
         },
         body: JSON.stringify({
           token: docId,
-          type: 'doc',
+          type: 'docx',
           members: [
             {
-              member_type: 'openid',
+              member_type: 'user',
               member_id: userOpenId,
               perm: 'full_access'
             }
@@ -824,17 +824,17 @@ async function executeCreateFeishuDoc(
           },
           body: JSON.stringify({
             token: documentId,
-            type: 'doc',
+            type: 'docx',
             members: [
               {
-                member_type: 'openid',
+                member_type: 'user',
                 member_id: userOpenId,
-                perm: 'edit'
+                perm: 'full_access'
               }
             ]
           }),
         });
-        console.log(`[FeishuDoc] Granted explicit edit permission to user: ${userOpenId}`);
+        console.log(`[FeishuDoc] Granted explicit full_access permission to user: ${userOpenId}`);
       } catch (memberErr) {
         console.error('[FeishuDoc] Failed to grant member permission:', memberErr);
       }
