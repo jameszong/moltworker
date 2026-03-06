@@ -293,6 +293,7 @@ if (process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET) {
         enabled: true,
         connectionMode: "webhook",
         webhookPort: 3000,
+        webhookHost: "0.0.0.0",
         webhookPath: "/webhooks/feishu"
     };
     if (process.env.FEISHU_ENCRYPT_KEY) {

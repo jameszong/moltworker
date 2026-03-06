@@ -36,7 +36,7 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd/skills
 
 # Copy startup script
-# Build cache bust: 2026-03-05-v35-openclaw-feishu-url-fix-req-url
+# Build cache bust: 2026-03-06-v36-openclaw-feishu-webhook-host
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
