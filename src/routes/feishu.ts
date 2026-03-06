@@ -164,7 +164,11 @@ feishu.get('/fix-docs', async (c) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          link_share_entity: 'tenant_editable'
+          external_access: true,
+          security_entity: 'anyone_can_view',
+          share_entity: 'anyone',
+          link_share_entity: 'anyone_editable',
+          invite_external: true
         }),
       });
       const data = await response.json();
@@ -660,7 +664,11 @@ async function executeCreateFeishuDoc(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          link_share_entity: 'tenant_editable'
+          external_access: true,
+          security_entity: 'anyone_can_view',
+          share_entity: 'anyone',
+          link_share_entity: 'anyone_editable',
+          invite_external: true
         }),
       });
       
@@ -668,10 +676,38 @@ async function executeCreateFeishuDoc(
         const errText = await permResponse.text();
         console.error(`[FeishuDoc] Failed to update permissions for ${documentId}:`, errText);
       } else {
-        console.log(`[FeishuDoc] Successfully granted tenant_editable permission to ${documentId}`);
+        console.log(`[FeishuDoc] Successfully granted public permissions to ${documentId}`);
       }
     } catch (permError) {
-      console.error('[FeishuDoc] Failed to grant permissions:', permError);
+      console.error('[FeishuDoc] Failed to grant public permissions:', permError);
+    }
+
+    // Explicitly grant permission to the user who requested the document
+    if (userOpenId) {
+      try {
+        const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+        await fetch(memberUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            token: documentId,
+            type: 'doc',
+            members: [
+              {
+                member_type: 'openid',
+                member_id: userOpenId,
+                perm: 'edit'
+              }
+            ]
+          }),
+        });
+        console.log(`[FeishuDoc] Granted explicit edit permission to user: ${userOpenId}`);
+      } catch (memberErr) {
+        console.error('[FeishuDoc] Failed to grant member permission:', memberErr);
+      }
     }
 
     return `✅ 飞书文档已成功创建！\n\n📄 标题: ${title}\n🔗 链接: ${documentUrl}\n\n文档已包含抓取的内容，您可以直接查看和编辑。`;
