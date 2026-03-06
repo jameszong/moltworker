@@ -118,7 +118,34 @@ feishu.post('/webhook', async (c) => {
       return c.body(null, 200);
     }
 
-    // For other event types, fall through to proxy to container
+    // Handle drive.file.permission_member_applied_v1 event - auto-grant manager permission
+    if (body && typeof body === 'object' && body.header?.event_type === 'drive.file.permission_member_applied_v1') {
+      console.log('[Feishu] Handling permission member applied event');
+      
+      const event = body.event;
+      const fileToken = event?.file_token;
+      const fileType = event?.file_type || 'docx';
+      const applicantInfo = event?.applicant;
+      
+      if (!fileToken || !applicantInfo) {
+        console.error('[Feishu] Missing file_token or applicant info in permission event');
+        return c.json({ code: 0, msg: 'success' }); // Return success to avoid retry
+      }
+      
+      console.log(`[Feishu] Permission applied for file: ${fileToken}, applicant:`, applicantInfo);
+      
+      // Process the permission grant asynchronously
+      const processingPromise = processPermissionApplication(
+        c.env,
+        fileToken,
+        fileType,
+        applicantInfo
+      );
+      c.executionCtx.waitUntil(processingPromise);
+      
+      // Return success immediately to avoid retry
+      return c.json({ code: 0, msg: 'success' });
+    }
     await ensureMoltbotGateway(sandbox, c.env);
 
     const originalUrl = new URL(c.req.url);
@@ -386,6 +413,88 @@ feishu.get('/transfer-owner', async (c) => {
       docId, 
       newOwner: ownerId,
       transferred: false, 
+      error: e instanceof Error ? e.message : 'Unknown error' 
+    });
+  }
+});
+
+// Subscribe to drive document events
+feishu.get('/subscribe-drive-events', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  try {
+    // Subscribe to drive.file.permission_member_applied_v1 event
+    // This is required in addition to standard event subscription
+    const subscribeUrl = 'https://open.feishu.cn/open-apis/drive/v1/events/subscriptions';
+    const response = await fetch(subscribeUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        events: [
+          {
+            event_type: 'drive.file.permission_member_applied_v1'
+          }
+        ]
+      }),
+    });
+
+    const data = await response.json().catch(() => null) as { 
+      code?: number; 
+      msg?: string; 
+      data?: { 
+        subscriptions?: Array<{event_type: string; status: string}> 
+      } 
+    } | null;
+    
+    if (response.status === 200 && data?.code === 0) {
+      return c.json({ 
+        subscribed: true, 
+        status: response.status,
+        subscriptions: data?.data?.subscriptions,
+        data 
+      });
+    } else {
+      return c.json({ 
+        subscribed: false, 
+        status: response.status, 
+        error: data 
+      });
+    }
+  } catch (e: unknown) {
+    return c.json({ 
+      subscribed: false, 
+      error: e instanceof Error ? e.message : 'Unknown error' 
+    });
+  }
+});
+
+// List current drive event subscriptions
+feishu.get('/list-drive-subscriptions', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  try {
+    const listUrl = 'https://open.feishu.cn/open-apis/drive/v1/events/subscriptions';
+    const response = await fetch(listUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const data = await response.json().catch(() => null);
+    
+    return c.json({ 
+      status: response.status,
+      data 
+    });
+  } catch (e: unknown) {
+    return c.json({ 
       error: e instanceof Error ? e.message : 'Unknown error' 
     });
   }
@@ -1316,5 +1425,87 @@ async function callOpenAI(apiKey: string, message: string, signal?: AbortSignal)
     }
     console.error('[AI] OpenAI exception:', error);
     return '抱歉，调用 AI 服务时发生错误。';
+  }
+}
+
+/**
+ * Process permission application event and grant manager permission to applicant
+ * Event type: drive.file.permission_member_applied_v1
+ */
+async function processPermissionApplication(
+  env: AppEnv['Bindings'],
+  fileToken: string,
+  fileType: string,
+  applicantInfo: {
+    member_type?: string;
+    member_id?: string;
+    open_id?: string;
+    user_id?: string;
+  }
+): Promise<void> {
+  try {
+    console.log('[PermissionAutoGrant] Processing permission application', {
+      fileToken,
+      fileType,
+      applicantInfo
+    });
+
+    const token = await getTenantAccessToken(env);
+    if (!token) {
+      console.error('[PermissionAutoGrant] Failed to get tenant access token');
+      return;
+    }
+
+    // Extract applicant ID - prefer member_id if available
+    const applicantId = applicantInfo.member_id || applicantInfo.open_id || applicantInfo.user_id;
+    if (!applicantId) {
+      console.error('[PermissionAutoGrant] No valid applicant ID found', applicantInfo);
+      return;
+    }
+
+    // Determine member_type - use 'user' as default for human users
+    // If member_type is explicitly provided, use it; otherwise infer from context
+    const memberType = applicantInfo.member_type || 'user';
+
+    // Build the permission API URL
+    const permUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${fileToken}/members?type=${fileType}`;
+
+    // Grant manager permission
+    const response = await fetch(permUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        members: [
+          {
+            member_type: memberType,
+            member_id: applicantId,
+            perm: 'manager' // Grant manager permission
+          }
+        ]
+      }),
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      console.log('[PermissionAutoGrant] Successfully granted manager permission', {
+        fileToken,
+        applicantId,
+        memberType,
+        result
+      });
+    } else {
+      const errorData = await response.json().catch(() => null);
+      console.error('[PermissionAutoGrant] Failed to grant manager permission', {
+        fileToken,
+        applicantId,
+        status: response.status,
+        error: errorData
+      });
+    }
+  } catch (error) {
+    console.error('[PermissionAutoGrant] Error processing permission application:', error);
   }
 }
