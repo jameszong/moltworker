@@ -245,6 +245,7 @@ async function handleFeishuMessage(
               env,
               args.title,
               args.content,
+              userOpenId,
               args.folder_token,
             );
             toolResults.push({ toolName: 'create_feishu_doc', result: docResult });
@@ -439,17 +440,18 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
     return '错误: Browser Rendering 未配置。请在 Cloudflare Dashboard 中启用 Browser Rendering。';
   }
 
+  let browser;
   try {
     console.log(`[WebScrape] Starting to scrape: ${url}`);
 
     // Launch browser using puppeteer
-    const browser = await puppeteer.launch(env.BROWSER);
+    browser = await puppeteer.launch(env.BROWSER);
     const page = await browser.newPage();
 
     // Navigate to URL with timeout
     await page.goto(url, {
-      waitUntil: 'networkidle2',
-      timeout: 30000,
+      waitUntil: 'domcontentloaded',
+      timeout: 15000,
     });
 
     // Get page content
@@ -485,8 +487,6 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
       return document.body.innerText.substring(0, 8000);
     });
 
-    await browser.close();
-
     const result = `标题: ${title}\n\n内容:\n${content}`;
     console.log(`[WebScrape] Successfully scraped ${url}, content length: ${content.length}`);
 
@@ -494,6 +494,10 @@ async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<s
   } catch (error) {
     console.error('[WebScrape] Error:', error);
     return `抓取网页时出错: ${error instanceof Error ? error.message : '未知错误'}`;
+  } finally {
+    if (browser) {
+      await browser.close().catch(e => console.error('[WebScrape] Error closing browser:', e));
+    }
   }
 }
 
@@ -504,6 +508,7 @@ async function executeCreateFeishuDoc(
   env: AppEnv['Bindings'],
   title: string,
   content: string,
+  userOpenId: string,
   folderToken?: string,
 ): Promise<string> {
   try {
@@ -609,6 +614,35 @@ async function executeCreateFeishuDoc(
     }
 
     console.log(`[FeishuDoc] Content added to document: ${documentId}`);
+    
+    // Grant permission to the user who requested the document
+    if (userOpenId) {
+      try {
+        const permUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+        await fetch(permUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            token: documentId,
+            type: 'doc',
+            members: [
+              {
+                member_type: 'openid',
+                member_id: userOpenId,
+                perm: 'edit'
+              }
+            ]
+          }),
+        });
+        console.log(`[FeishuDoc] Granted edit permission to user: ${userOpenId}`);
+      } catch (permError) {
+        console.error('[FeishuDoc] Failed to grant permissions:', permError);
+        // We continue since the document is already created
+      }
+    }
 
     return `✅ 飞书文档已成功创建！\n\n📄 标题: ${title}\n🔗 链接: ${documentUrl}\n\n文档已包含抓取的内容，您可以直接查看和编辑。`;
   } catch (error) {
