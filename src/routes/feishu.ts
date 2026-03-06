@@ -2,6 +2,30 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { ensureMoltbotGateway } from '../gateway';
 import { sendFeishuMessage } from '../services/feishu-api';
+import puppeteer from '@cloudflare/puppeteer';
+
+/**
+ * Tool definitions for Function Calling
+ */
+const TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'web_scrape',
+      description: '抓取网页内容并提取文本。当用户询问网页内容、需要访问URL获取信息时使用此工具。',
+      parameters: {
+        type: 'object' as const,
+        properties: {
+          url: {
+            type: 'string' as const,
+            description: '要抓取的网页URL',
+          },
+        },
+        required: ['url'],
+      },
+    },
+  },
+];
 
 /**
  * Feishu Webhook routes
@@ -119,7 +143,7 @@ async function handleFeishuMessageWithTimeout(
 }
 
 /**
- * Handle a Feishu message: call AI directly and send the response back
+ * Handle a Feishu message: call AI with tool support and send the response back
  */
 async function handleFeishuMessage(
   env: AppEnv['Bindings'],
@@ -127,11 +151,48 @@ async function handleFeishuMessage(
   userMessage: string,
 ): Promise<void> {
   try {
-    // Call AI directly using configured AI service
-    const aiResponse = await callAIWithTimeout(env, userMessage, 30000);
+    // Build conversation with tool support
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: '你是一个 helpful assistant。如果需要获取网页内容来获取信息，请使用 web_scrape 工具。' },
+      { role: 'user', content: userMessage },
+    ];
+
+    // Call AI with tool support (up to 3 tool call rounds)
+    let finalResponse = '';
+    for (let round = 0; round < 3; round++) {
+      // Use timeout wrapper for Paid Plan longer execution
+      const result = await callAIWithToolsTimeout(env, messages, TOOLS, 30000);
+      
+      if (result.type === 'message') {
+        finalResponse = result.content;
+        break;
+      }
+      
+      if (result.type === 'tool_calls') {
+        // Execute tools and add results to conversation
+        for (const toolCall of result.toolCalls) {
+          if (toolCall.function.name === 'web_scrape') {
+            const args = JSON.parse(toolCall.function.arguments);
+            console.log(`[Tool] web_scrape: ${args.url}`);
+            
+            const scrapeResult = await executeWebScrape(env, args.url);
+            
+            // Add tool result to conversation
+            messages.push(
+              { role: 'assistant', content: `我将抓取网页: ${args.url}` },
+              { role: 'user', content: `[网页抓取结果]\n${scrapeResult}` },
+            );
+          }
+        }
+      }
+    }
+
+    if (!finalResponse) {
+      finalResponse = '抱歉，处理您的请求时出现了问题。';
+    }
 
     // Send the AI response back to the user
-    const sent = await sendFeishuMessage(env, userOpenId, aiResponse);
+    const sent = await sendFeishuMessage(env, userOpenId, finalResponse);
     if (!sent) {
       console.error('[Feishu] Failed to send AI response to user:', userOpenId);
     } else {
@@ -139,7 +200,6 @@ async function handleFeishuMessage(
     }
   } catch (error) {
     console.error('[Feishu] Error handling message:', error);
-    // Try to send an error message to the user
     try {
       await sendFeishuMessage(env, userOpenId, '抱歉，系统遇到了问题，请稍后再试。');
     } catch (sendError) {
@@ -148,28 +208,197 @@ async function handleFeishuMessage(
   }
 }
 
+interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 /**
- * Call AI API with timeout
+ * Call AI API with timeout (with tool support)
  */
-async function callAIWithTimeout(env: AppEnv['Bindings'], message: string, timeoutMs: number): Promise<string> {
+async function callAIWithToolsTimeout(
+  env: AppEnv['Bindings'], 
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  tools: typeof TOOLS,
+  timeoutMs: number
+): Promise<{ type: 'message'; content: string } | { type: 'tool_calls'; toolCalls: ToolCall[] }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const result = await Promise.race([
-      callAI(env, message, controller.signal),
-      new Promise<string>((_, reject) => {
+      callAIWithTools(env, messages, tools, controller.signal),
+      new Promise<{ type: 'message'; content: string }>((_, reject) => {
         setTimeout(() => reject(new Error('AI call timeout')), timeoutMs);
       }),
     ]);
     return result;
   } catch (error) {
     if (error instanceof Error && error.message === 'AI call timeout') {
-      return '抱歉，AI 响应超时，请稍后重试或简化您的问题。';
+      return { type: 'message', content: '抱歉，AI 响应超时，请稍后重试或简化您的问题。' };
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Call AI with tool support (Function Calling)
+ */
+async function callAIWithTools(
+  env: AppEnv['Bindings'],
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  tools: typeof TOOLS,
+  signal?: AbortSignal,
+): Promise<{ type: 'message'; content: string } | { type: 'tool_calls'; toolCalls: ToolCall[] }> {
+  // Priority 3: DashScope (Aliyun) - supports function calling
+  if (env.DASHSCOPE_API_KEY) {
+    return await callDashScopeWithTools(env.DASHSCOPE_API_KEY, env.DASHSCOPE_MODEL || 'qwen-plus', messages, tools, signal);
+  }
+
+  // Fallback: regular call without tools
+  const lastMessage = messages[messages.length - 1]?.content || '';
+  const response = await callAI(env, lastMessage, signal);
+  return { type: 'message', content: response };
+}
+
+/**
+ * Call DashScope with function calling support
+ */
+async function callDashScopeWithTools(
+  apiKey: string,
+  model: string,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+  tools: typeof TOOLS,
+  signal?: AbortSignal,
+): Promise<{ type: 'message'; content: string } | { type: 'tool_calls'; toolCalls: ToolCall[] }> {
+  try {
+    const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: messages,
+        tools: tools,
+        max_tokens: 2000,
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      console.error('[AI] DashScope API error:', response.status, response.statusText);
+      return { type: 'message', content: '抱歉，AI 服务暂时不可用。' };
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+          tool_calls?: ToolCall[];
+        };
+      }>;
+      error?: { message?: string };
+    };
+
+    if (data.error) {
+      console.error('[AI] DashScope error:', data.error);
+      return { type: 'message', content: '抱歉，AI 处理消息时出错了。' };
+    }
+
+    const message = data.choices?.[0]?.message;
+
+    // Check if AI wants to call tools
+    if (message?.tool_calls && message.tool_calls.length > 0) {
+      return { type: 'tool_calls', toolCalls: message.tool_calls };
+    }
+
+    // Regular message response
+    const content = message?.content;
+    if (!content) {
+      return { type: 'message', content: '抱歉，AI 没有生成回复。' };
+    }
+
+    return { type: 'message', content };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return { type: 'message', content: '抱歉，AI 请求已超时。' };
+    }
+    console.error('[AI] DashScope exception:', error);
+    return { type: 'message', content: '抱歉，调用 AI 服务时发生错误。' };
+  }
+}
+
+/**
+ * Execute web scraping tool using puppeteer
+ */
+async function executeWebScrape(env: AppEnv['Bindings'], url: string): Promise<string> {
+  if (!env.BROWSER) {
+    return '错误: Browser Rendering 未配置。请在 Cloudflare Dashboard 中启用 Browser Rendering。';
+  }
+
+  try {
+    console.log(`[WebScrape] Starting to scrape: ${url}`);
+    
+    // Launch browser using puppeteer
+    const browser = await puppeteer.launch(env.BROWSER);
+    const page = await browser.newPage();
+    
+    // Navigate to URL with timeout
+    await page.goto(url, { 
+      waitUntil: 'networkidle2',
+      timeout: 30000 
+    });
+    
+    // Get page content
+    const title = await page.title();
+    const content = await page.evaluate(() => {
+      // Extract main content - prioritize article/main content
+      const selectors = [
+        'article',
+        'main',
+        '[role="main"]',
+        '.content',
+        '.post-content',
+        '.entry-content',
+        '#content',
+        'body'
+      ];
+      
+      for (const selector of selectors) {
+        const element = document.querySelector(selector) as HTMLElement | null;
+        if (element) {
+          // Get text content, cleaning up whitespace
+          const text = element.innerText
+            .replace(/\s+/g, ' ')
+            .replace(/\n\s*\n/g, '\n')
+            .trim();
+          
+          if (text.length > 100) {
+            return text.substring(0, 8000); // Limit content length
+          }
+        }
+      }
+      
+      return document.body.innerText.substring(0, 8000);
+    });
+    
+    await browser.close();
+    
+    const result = `标题: ${title}\n\n内容:\n${content}`;
+    console.log(`[WebScrape] Successfully scraped ${url}, content length: ${content.length}`);
+    
+    return result;
+  } catch (error) {
+    console.error('[WebScrape] Error:', error);
+    return `抓取网页时出错: ${error instanceof Error ? error.message : '未知错误'}`;
   }
 }
 
