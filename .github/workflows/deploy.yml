@@ -40,17 +40,7 @@ jobs:
             exit 1
           fi
           echo "Injecting KV Namespace ID: ${{ secrets.CONVERSATION_KV_ID }}"
-          
-          # Install jq for JSON manipulation
-          sudo apt-get update && sudo apt-get install -y jq
-          
-          # Use jq to safely replace the KV ID
-          jq --arg kv_id "${{ secrets.CONVERSATION_KV_ID }}" \
-            '.kv_namespaces[0].id = $kv_id' \
-            wrangler.jsonc > wrangler.jsonc.tmp && \
-          mv wrangler.jsonc.tmp wrangler.jsonc
-          
-          echo "KV Namespace ID injected"
+          python3 scripts/inject-kv-id.py "${{ secrets.CONVERSATION_KV_ID }}"
           echo "Updated configuration:"
           cat wrangler.jsonc | grep -A5 "kv_namespaces"
 
