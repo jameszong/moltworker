@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { ensureMoltbotGateway } from '../gateway';
 import { sendFeishuMessage } from '../services/feishu-api';
-import { MOLTBOT_PORT } from '../config';
 
 /**
  * Feishu Webhook routes
@@ -58,9 +57,9 @@ feishu.post('/webhook', async (c) => {
 
       // Return HTTP 200 immediately to avoid Feishu retry
       // The AI response will be sent asynchronously
-      c.executionCtx.waitUntil(
-        handleFeishuMessage(c.env, sandbox, openId || unionId || '', textContent),
-      );
+      // Use waitUntil with a timeout wrapper for Paid Plan longer execution
+      const processingPromise = handleFeishuMessageWithTimeout(c.env, openId || unionId || '', textContent, 55000);
+      c.executionCtx.waitUntil(processingPromise);
 
       return c.body(null, 200);
     }
@@ -91,17 +90,45 @@ feishu.post('/webhook', async (c) => {
 });
 
 /**
+ * Handle a Feishu message with timeout wrapper for Paid Plan
+ */
+async function handleFeishuMessageWithTimeout(
+  env: AppEnv['Bindings'],
+  userOpenId: string,
+  userMessage: string,
+  timeoutMs: number,
+): Promise<void> {
+  const timeoutPromise = new Promise<void>((_, reject) => {
+    setTimeout(() => reject(new Error('AI processing timeout')), timeoutMs);
+  });
+
+  try {
+    await Promise.race([
+      handleFeishuMessage(env, userOpenId, userMessage),
+      timeoutPromise,
+    ]);
+  } catch (error) {
+    console.error('[Feishu] Message processing timed out or failed:', error);
+    // Send timeout message to user
+    try {
+      await sendFeishuMessage(env, userOpenId, '抱歉，请求处理超时，请稍后重试或简化您的问题。');
+    } catch (sendError) {
+      console.error('[Feishu] Failed to send timeout message:', sendError);
+    }
+  }
+}
+
+/**
  * Handle a Feishu message: call AI directly and send the response back
  */
 async function handleFeishuMessage(
   env: AppEnv['Bindings'],
-  sandbox: import('@cloudflare/sandbox').Sandbox,
   userOpenId: string,
   userMessage: string,
 ): Promise<void> {
   try {
-    // Call AI directly using DashScope (Aliyun) API
-    const aiResponse = await callAI(env, userMessage);
+    // Call AI directly using configured AI service
+    const aiResponse = await callAIWithTimeout(env, userMessage, 30000);
 
     // Send the AI response back to the user
     const sent = await sendFeishuMessage(env, userOpenId, aiResponse);
@@ -122,43 +149,131 @@ async function handleFeishuMessage(
 }
 
 /**
+ * Call AI API with timeout
+ */
+async function callAIWithTimeout(env: AppEnv['Bindings'], message: string, timeoutMs: number): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const result = await Promise.race([
+      callAI(env, message, controller.signal),
+      new Promise<string>((_, reject) => {
+        setTimeout(() => reject(new Error('AI call timeout')), timeoutMs);
+      }),
+    ]);
+    return result;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'AI call timeout') {
+      return '抱歉，AI 响应超时，请稍后重试或简化您的问题。';
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
  * Call AI API to generate response
  * Supports DashScope (Aliyun) and Cloudflare AI Gateway
  */
-async function callAI(env: AppEnv['Bindings'], message: string): Promise<string> {
-  // Try DashScope first (Aliyun)
-  if (env.DASHSCOPE_API_KEY) {
-    return await callDashScope(env.DASHSCOPE_API_KEY, env.DASHSCOPE_MODEL || 'qwen-plus', message);
+async function callAI(env: AppEnv['Bindings'], message: string, signal?: AbortSignal): Promise<string> {
+  // Priority 1: Use Cloudflare Workers AI (fastest, no external API call)
+  if (env.CF_AI_ACCOUNT_ID && env.CF_AI_API_TOKEN) {
+    return await callCloudflareWorkersAI(env.CF_AI_ACCOUNT_ID, env.CF_AI_API_TOKEN, message, signal);
   }
 
-  // Fallback to Cloudflare AI Gateway if configured
+  // Priority 2: Cloudflare AI Gateway
   if (env.CLOUDFLARE_AI_GATEWAY_API_KEY && env.CF_AI_GATEWAY_ACCOUNT_ID && env.CF_AI_GATEWAY_GATEWAY_ID) {
     return await callCloudflareAIGateway(
       env.CLOUDFLARE_AI_GATEWAY_API_KEY,
       env.CF_AI_GATEWAY_ACCOUNT_ID,
       env.CF_AI_GATEWAY_GATEWAY_ID,
-      env.CF_AI_GATEWAY_MODEL || 'openai/gpt-4o',
+      env.CF_AI_GATEWAY_MODEL || '@cf/meta/llama-3.1-8b-instruct',
       message,
+      signal,
     );
   }
 
-  // Try Anthropic if configured
+  // Priority 3: DashScope (Aliyun)
+  if (env.DASHSCOPE_API_KEY) {
+    return await callDashScope(env.DASHSCOPE_API_KEY, env.DASHSCOPE_MODEL || 'qwen-plus', message, signal);
+  }
+
+  // Priority 4: Anthropic
   if (env.ANTHROPIC_API_KEY) {
-    return await callAnthropic(env.ANTHROPIC_API_KEY, message);
+    return await callAnthropic(env.ANTHROPIC_API_KEY, message, signal);
   }
 
-  // Try OpenAI if configured
+  // Priority 5: OpenAI
   if (env.OPENAI_API_KEY) {
-    return await callOpenAI(env.OPENAI_API_KEY, message);
+    return await callOpenAI(env.OPENAI_API_KEY, message, signal);
   }
 
-  return '抱歉，AI 服务未配置，无法处理您的消息。';
+  return '抱歉，AI 服务未配置，无法处理您的消息。请在环境变量中配置 CF_AI_ACCOUNT_ID + CF_AI_API_TOKEN (推荐) 或其他 AI 服务。';
+}
+
+/**
+ * Call Cloudflare Workers AI (direct, fastest)
+ */
+async function callCloudflareWorkersAI(
+  accountId: string,
+  apiToken: string,
+  message: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.1-8b-instruct`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: 'You are a helpful assistant. Please respond in Chinese.' },
+            { role: 'user', content: message },
+          ],
+          max_tokens: 2048,
+        }),
+        signal,
+      },
+    );
+
+    if (!response.ok) {
+      console.error('[AI] Cloudflare Workers AI error:', response.status, response.statusText);
+      const errorText = await response.text();
+      console.error('[AI] Error details:', errorText);
+      return '抱歉，AI 服务暂时不可用，请稍后再试。';
+    }
+
+    const data = (await response.json()) as {
+      result?: { response?: string };
+      success?: boolean;
+      errors?: Array<{ message: string }>;
+    };
+
+    if (!data.success || data.errors) {
+      console.error('[AI] Cloudflare Workers AI error:', data.errors);
+      return '抱歉，AI 处理消息时出错了。';
+    }
+
+    return data.result?.response || '抱歉，AI 没有生成回复。';
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return '抱歉，AI 请求已取消。';
+    }
+    console.error('[AI] Cloudflare Workers AI exception:', error);
+    return '抱歉，调用 AI 服务时发生错误。';
+  }
 }
 
 /**
  * Call DashScope (Aliyun) API
  */
-async function callDashScope(apiKey: string, model: string, message: string): Promise<string> {
+async function callDashScope(apiKey: string, model: string, message: string, signal?: AbortSignal): Promise<string> {
   try {
     const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
       method: 'POST',
@@ -174,6 +289,7 @@ async function callDashScope(apiKey: string, model: string, message: string): Pr
         ],
         max_tokens: 2000,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -200,6 +316,9 @@ async function callDashScope(apiKey: string, model: string, message: string): Pr
 
     return content;
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return '抱歉，AI 请求已超时。';
+    }
     console.error('[AI] DashScope exception:', error);
     return '抱歉，调用 AI 服务时发生错误。';
   }
@@ -214,14 +333,17 @@ async function callCloudflareAIGateway(
   gatewayId: string,
   model: string,
   message: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   try {
     const slashIdx = model.indexOf('/');
-    const provider = slashIdx > 0 ? model.substring(0, slashIdx) : 'openai';
+    const provider = slashIdx > 0 ? model.substring(0, slashIdx) : 'workers-ai';
     const modelId = slashIdx > 0 ? model.substring(slashIdx + 1) : model;
 
+    // Use Cloudflare AI Gateway with Workers AI for best performance
     const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/${provider}`;
     const isAnthropic = provider === 'anthropic';
+    const isWorkersAI = provider === 'workers-ai';
 
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${apiKey}`,
@@ -236,6 +358,15 @@ async function callCloudflareAIGateway(
         model: modelId,
         messages: [{ role: 'user', content: message }],
         max_tokens: 2000,
+      };
+    } else if (isWorkersAI) {
+      // Workers AI format
+      body = {
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: message },
+        ],
+        max_tokens: 2048,
       };
     } else {
       body = {
@@ -252,6 +383,7 @@ async function callCloudflareAIGateway(
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal,
     });
 
     if (!response.ok) {
@@ -262,12 +394,18 @@ async function callCloudflareAIGateway(
     const data = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
       content?: Array<{ text?: string }>;
+      result?: { response?: string };
       error?: { message?: string };
     };
 
     if (data.error) {
       console.error('[AI] Cloudflare AI Gateway error:', data.error);
       return '抱歉，AI 处理消息时出错了。';
+    }
+
+    // Handle Workers AI format
+    if (data.result?.response) {
+      return data.result.response;
     }
 
     // Handle Anthropic format (content array)
@@ -283,6 +421,9 @@ async function callCloudflareAIGateway(
 
     return content;
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return '抱歉，AI 请求已超时。';
+    }
     console.error('[AI] Cloudflare AI Gateway exception:', error);
     return '抱歉，调用 AI 服务时发生错误。';
   }
@@ -291,7 +432,7 @@ async function callCloudflareAIGateway(
 /**
  * Call Anthropic API directly
  */
-async function callAnthropic(apiKey: string, message: string): Promise<string> {
+async function callAnthropic(apiKey: string, message: string, signal?: AbortSignal): Promise<string> {
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -305,6 +446,7 @@ async function callAnthropic(apiKey: string, message: string): Promise<string> {
         messages: [{ role: 'user', content: message }],
         max_tokens: 2000,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -329,6 +471,9 @@ async function callAnthropic(apiKey: string, message: string): Promise<string> {
 
     return content;
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return '抱歉，AI 请求已超时。';
+    }
     console.error('[AI] Anthropic exception:', error);
     return '抱歉，调用 AI 服务时发生错误。';
   }
@@ -337,7 +482,7 @@ async function callAnthropic(apiKey: string, message: string): Promise<string> {
 /**
  * Call OpenAI API directly
  */
-async function callOpenAI(apiKey: string, message: string): Promise<string> {
+async function callOpenAI(apiKey: string, message: string, signal?: AbortSignal): Promise<string> {
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -353,6 +498,7 @@ async function callOpenAI(apiKey: string, message: string): Promise<string> {
         ],
         max_tokens: 2000,
       }),
+      signal,
     });
 
     if (!response.ok) {
@@ -377,6 +523,9 @@ async function callOpenAI(apiKey: string, message: string): Promise<string> {
 
     return content;
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return '抱歉，AI 请求已超时。';
+    }
     console.error('[AI] OpenAI exception:', error);
     return '抱歉，调用 AI 服务时发生错误。';
   }

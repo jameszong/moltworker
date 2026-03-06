@@ -39,7 +39,9 @@ export interface MoltbotEnv {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   R2_BUCKET_NAME?: string; // Override bucket name (default: 'moltbot-data')
-  CF_ACCOUNT_ID?: string; // Cloudflare account ID for R2 endpoint
+  // Direct Cloudflare Workers AI (fastest, no external network)
+  CF_AI_ACCOUNT_ID?: string; // Same as CF_ACCOUNT_ID but explicit for Workers AI
+  CF_AI_API_TOKEN?: string; // Cloudflare API token with AI permissions
   // Feishu configuration
   FEISHU_APP_ID?: string;
   FEISHU_APP_SECRET?: string;
