@@ -311,6 +311,34 @@ feishu.get('/fix-doc-single', async (c) => {
   return c.json({ docId, userOpenId, results });
 });
 
+// Delete document endpoint
+feishu.get('/delete-doc', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  const docId = c.req.query('docId');
+  if (!docId) return c.json({ error: 'Missing docId parameter' });
+
+  try {
+    const deleteUrl = `https://open.feishu.cn/open-apis/docx/v1/documents/${docId}`;
+    const response = await fetch(deleteUrl, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (response.status === 200) {
+      return c.json({ docId, deleted: true, status: response.status });
+    } else {
+      const data = await response.json().catch(() => null);
+      return c.json({ docId, deleted: false, status: response.status, error: data });
+    }
+  } catch (e: unknown) {
+    return c.json({ docId, deleted: false, error: e instanceof Error ? e.message : 'Unknown error' });
+  }
+});
+
 /**
  * Handle a Feishu message with timeout wrapper for Paid Plan
  */
