@@ -29,7 +29,7 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'create_feishu_doc',
-      description: '创建飞书文档。当用户要求将内容保存为飞书文档、生成文档或创建文档时使用此工具。',
+      description: '创建飞书文档（将自动为组织内所有用户授予可编辑/管理权限）。当用户要求将内容保存为飞书文档、生成文档或创建文档时使用此工具。',
       parameters: {
         type: 'object' as const,
         properties: {
@@ -141,6 +141,40 @@ feishu.post('/webhook', async (c) => {
     console.error('[Feishu] Webhook proxy error:', error);
     return c.json({ error: 'Internal server error during proxying' }, 500);
   }
+});
+
+feishu.get('/fix-docs', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  const docs = [
+    'Y3SrdNfAholnFcxJT2LcY5bhn3g',
+    'FWtFdchPuo5mJExs6BXcqH7YnQh',
+    'YcVndy09FoeJ8fxTuNpcHGP9nOf'
+  ];
+
+  const results = [];
+  for (const docId of docs) {
+    try {
+      const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${docId}/public?type=docx`;
+      const response = await fetch(permUrl, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          link_share_entity: 'tenant_editable'
+        }),
+      });
+      const data = await response.json();
+      results.push({ docId, status: response.status, data });
+    } catch (e) {
+      results.push({ docId, error: e.message });
+    }
+  }
+
+  return c.json({ results });
 });
 
 /**
@@ -615,33 +649,29 @@ async function executeCreateFeishuDoc(
 
     console.log(`[FeishuDoc] Content added to document: ${documentId}`);
     
-    // Grant permission to the user who requested the document
-    if (userOpenId) {
-      try {
-        const permUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
-        await fetch(permUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            token: documentId,
-            type: 'doc',
-            members: [
-              {
-                member_type: 'openid',
-                member_id: userOpenId,
-                perm: 'edit'
-              }
-            ]
-          }),
-        });
-        console.log(`[FeishuDoc] Granted edit permission to user: ${userOpenId}`);
-      } catch (permError) {
-        console.error('[FeishuDoc] Failed to grant permissions:', permError);
-        // We continue since the document is already created
+    // Set document public permissions so everyone in the tenant can edit
+    try {
+      // Use Drive v2 public permission API
+      const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${documentId}/public?type=docx`;
+      const permResponse = await fetch(permUrl, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          link_share_entity: 'tenant_editable'
+        }),
+      });
+      
+      if (!permResponse.ok) {
+        const errText = await permResponse.text();
+        console.error(`[FeishuDoc] Failed to update permissions for ${documentId}:`, errText);
+      } else {
+        console.log(`[FeishuDoc] Successfully granted tenant_editable permission to ${documentId}`);
       }
+    } catch (permError) {
+      console.error('[FeishuDoc] Failed to grant permissions:', permError);
     }
 
     return `✅ 飞书文档已成功创建！\n\n📄 标题: ${title}\n🔗 链接: ${documentUrl}\n\n文档已包含抓取的内容，您可以直接查看和编辑。`;
