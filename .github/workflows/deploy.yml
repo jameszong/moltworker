@@ -33,17 +33,6 @@ jobs:
       - name: Build project
         run: npm run build
 
-      - name: Inject KV Namespace ID
-        run: |
-          if [ -z "${{ secrets.CONVERSATION_KV_ID }}" ]; then
-            echo "ERROR: CONVERSATION_KV_ID secret is not set!"
-            exit 1
-          fi
-          echo "Injecting KV Namespace ID: ${{ secrets.CONVERSATION_KV_ID }}"
-          python3 scripts/inject-kv-id.py "${{ secrets.CONVERSATION_KV_ID }}"
-          echo "Updated configuration:"
-          cat wrangler.jsonc | grep -A5 "kv_namespaces"
-
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
