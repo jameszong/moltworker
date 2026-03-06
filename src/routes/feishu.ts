@@ -339,6 +339,64 @@ feishu.get('/delete-doc', async (c) => {
   }
 });
 
+// Transfer owner endpoint - transfer document ownership to specified user
+feishu.get('/transfer-owner', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  const docId = c.req.query('docId');
+  const ownerId = c.req.query('ownerId') || '9b757773'; // Default to user specified
+
+  if (!docId) return c.json({ error: 'Missing docId parameter' });
+
+  try {
+    // Use the permission member API to transfer ownership
+    const transferUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+    const response = await fetch(transferUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        token: docId,
+        type: 'docx',
+        owner: {
+          member_type: 'user',
+          member_id: ownerId
+        }
+      }),
+    });
+
+    const data = await response.json().catch(() => null) as { code?: number; msg?: string; data?: unknown } | null;
+    
+    if (response.status === 200 && data?.code === 0) {
+      return c.json({ 
+        docId, 
+        newOwner: ownerId,
+        transferred: true, 
+        status: response.status,
+        data 
+      });
+    } else {
+      return c.json({ 
+        docId, 
+        newOwner: ownerId,
+        transferred: false, 
+        status: response.status, 
+        error: data 
+      });
+    }
+  } catch (e: unknown) {
+    return c.json({ 
+      docId, 
+      newOwner: ownerId,
+      transferred: false, 
+      error: e instanceof Error ? e.message : 'Unknown error' 
+    });
+  }
+});
+
 /**
  * Handle a Feishu message with timeout wrapper for Paid Plan
  */
