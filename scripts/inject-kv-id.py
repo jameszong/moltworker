@@ -1,26 +1,23 @@
 import json
 import sys
+import re
 
 # Read the file
 with open('wrangler.jsonc', 'r') as f:
     content = f.read()
 
-# Remove comments (simple approach)
-lines = content.split('\n')
-clean_lines = []
-for line in lines:
-    # Remove inline comments
-    if '//' in line:
-        line = line[:line.index('//')]
-    clean_lines.append(line)
+# Remove comments (both // and /* */ style)
+content = re.sub(r'//.*', '', content)  # Remove // comments
+content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)  # Remove /* */ comments
 
-clean_content = '\n'.join(clean_lines)
+# Remove trailing commas and whitespace
+content = re.sub(r',\s*([}\]])', r'\1', content)
 
 # Parse and modify
-data = json.loads(clean_content)
+data = json.loads(content)
 data['kv_namespaces'][0]['id'] = sys.argv[1]
 
-# Write back (preserving comments)
+# Write back as clean JSON
 with open('wrangler.jsonc', 'w') as f:
     json.dump(data, f, indent=2)
 
