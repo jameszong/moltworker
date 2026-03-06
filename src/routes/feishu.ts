@@ -500,6 +500,70 @@ feishu.get('/list-drive-subscriptions', async (c) => {
   }
 });
 
+// Diagnostic endpoint - check document info and permissions
+feishu.get('/doc-info', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  const docId = c.req.query('docId');
+  if (!docId) return c.json({ error: 'Missing docId parameter' });
+
+  const results: Record<string, unknown> = {};
+
+  // 1. Try to get document metadata
+  try {
+    const metaUrl = `https://open.feishu.cn/open-apis/docx/v1/documents/${docId}`;
+    const metaResponse = await fetch(metaUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    results.document = {
+      status: metaResponse.status,
+      data: await metaResponse.json().catch(() => null)
+    };
+  } catch (e: unknown) {
+    results.document = { error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  // 2. Try to get document permissions
+  try {
+    const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${docId}/public?type=docx`;
+    const permResponse = await fetch(permUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    results.permissions = {
+      status: permResponse.status,
+      data: await permResponse.json().catch(() => null)
+    };
+  } catch (e: unknown) {
+    results.permissions = { error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  // 3. Try to list document members
+  try {
+    const membersUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${docId}/members?type=docx`;
+    const membersResponse = await fetch(membersUrl, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    results.members = {
+      status: membersResponse.status,
+      data: await membersResponse.json().catch(() => null)
+    };
+  } catch (e: unknown) {
+    results.members = { error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  return c.json({ docId, results });
+});
+
 /**
  * Handle a Feishu message with timeout wrapper for Paid Plan
  */
