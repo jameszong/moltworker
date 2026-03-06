@@ -147,6 +147,9 @@ feishu.get('/fix-docs', async (c) => {
   const token = await getTenantAccessToken(c.env);
   if (!token) return c.json({ error: 'No token' });
 
+  // Get userOpenId from query param to add explicit permission
+  const userOpenId = c.req.query('user');
+
   const docs = [
     'Y3SrdNfAholnFcxJT2LcY5bhn3g',
     'FWtFdchPuo5mJExs6BXcqH7YnQh',
@@ -156,6 +159,7 @@ feishu.get('/fix-docs', async (c) => {
   const results = [];
   for (const docId of docs) {
     try {
+      // Try 1: PATCH public permission with type=docx
       const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${docId}/public?type=docx`;
       const response = await fetch(permUrl, {
         method: 'PATCH',
@@ -172,13 +176,139 @@ feishu.get('/fix-docs', async (c) => {
         }),
       });
       const data = await response.json();
-      results.push({ docId, status: response.status, data });
-    } catch (e) {
-      results.push({ docId, error: e.message });
+      
+      // Try 2: Add explicit member permission if userOpenId provided
+      let memberResult = null;
+      if (userOpenId) {
+        try {
+          const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+          const memberResponse = await fetch(memberUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              token: docId,
+              type: 'doc',
+              members: [
+                {
+                  member_type: 'openid',
+                  member_id: userOpenId,
+                  perm: 'edit'
+                }
+              ]
+            }),
+          });
+          memberResult = await memberResponse.json();
+        } catch (memberErr) {
+          memberResult = { error: memberErr.message };
+        }
+      }
+      
+      results.push({ 
+        docId, 
+        status: response.status, 
+        data,
+        memberPermission: memberResult,
+        fixUrl: `https://moltbot-sandbox.wowmade.cn/feishu/fix-doc-single?docId=${docId}&user=${userOpenId || ''}`
+      });
+    } catch (e: unknown) {
+      results.push({ docId, error: e instanceof Error ? e.message : 'Unknown error' });
     }
   }
 
-  return c.json({ results });
+  return c.json({ 
+    results,
+    note: 'If documents still 404, try accessing the fixUrl for individual doc fix with your user openid'
+  });
+});
+
+// Single document fix endpoint with explicit user permission
+feishu.get('/fix-doc-single', async (c) => {
+  const token = await getTenantAccessToken(c.env);
+  if (!token) return c.json({ error: 'No token' });
+
+  const docId = c.req.query('docId');
+  const userOpenId = c.req.query('user');
+  
+  if (!docId) return c.json({ error: 'Missing docId' });
+
+  const results: Record<string, unknown> = {};
+
+  // Try with type=docx
+  try {
+    const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${docId}/public?type=docx`;
+    const response = await fetch(permUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        external_access: true,
+        security_entity: 'anyone_can_view',
+        share_entity: 'anyone',
+        link_share_entity: 'anyone_editable',
+        invite_external: true
+      }),
+    });
+    results.docx = { status: response.status, data: await response.json() };
+  } catch (e: unknown) {
+    results.docx = { error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  // Try with type=doc
+  try {
+    const permUrl = `https://open.feishu.cn/open-apis/drive/v2/permissions/${docId}/public?type=doc`;
+    const response = await fetch(permUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        external_access: true,
+        security_entity: 'anyone_can_view',
+        share_entity: 'anyone',
+        link_share_entity: 'anyone_editable',
+        invite_external: true
+      }),
+    });
+    results.doc = { status: response.status, data: await response.json() };
+  } catch (e: unknown) {
+    results.doc = { error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+
+  // Add explicit member permission if userOpenId provided
+  if (userOpenId) {
+    try {
+      const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+      const memberResponse = await fetch(memberUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          token: docId,
+          type: 'doc',
+          members: [
+            {
+              member_type: 'openid',
+              member_id: userOpenId,
+              perm: 'full_access'
+            }
+          ]
+        }),
+      });
+      results.member = { status: memberResponse.status, data: await memberResponse.json() };
+    } catch (e: unknown) {
+      results.member = { error: e instanceof Error ? e.message : 'Unknown error' };
+    }
+  }
+
+  return c.json({ docId, userOpenId, results });
 });
 
 /**
