@@ -181,7 +181,7 @@ feishu.get('/fix-docs', async (c) => {
       let memberResult = null;
       if (userOpenId) {
         try {
-          const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+          const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${docId}/members?type=docx`;
           const memberResponse = await fetch(memberUrl, {
             method: 'POST',
             headers: {
@@ -189,8 +189,6 @@ feishu.get('/fix-docs', async (c) => {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              token: docId,
-              type: 'docx',
               members: [
                 {
                   member_type: 'user',
@@ -283,7 +281,7 @@ feishu.get('/fix-doc-single', async (c) => {
   // Add explicit member permission if userOpenId provided
   if (userOpenId) {
     try {
-      const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+      const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${docId}/members?type=docx`;
       const memberResponse = await fetch(memberUrl, {
         method: 'POST',
         headers: {
@@ -291,8 +289,6 @@ feishu.get('/fix-doc-single', async (c) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          token: docId,
-          type: 'docx',
           members: [
             {
               member_type: 'user',
@@ -350,17 +346,15 @@ feishu.get('/transfer-owner', async (c) => {
   if (!docId) return c.json({ error: 'Missing docId parameter' });
 
   try {
-    // Use the permission member API to transfer ownership
-    const transferUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
+    // Use the transfer owner API
+    const transferUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${docId}/owner?type=docx`;
     const response = await fetch(transferUrl, {
-      method: 'PATCH',
+      method: 'PUT',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        token: docId,
-        type: 'docx',
         owner: {
           member_type: 'user',
           member_id: ownerId
@@ -898,19 +892,18 @@ async function executeCreateFeishuDoc(
       console.error('[FeishuDoc] Failed to grant public permissions:', permError);
     }
 
-    // Explicitly grant permission to the user who requested the document
+    // Add explicit member permission if userOpenId provided
     if (userOpenId) {
       try {
-        const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/document/members`;
-        await fetch(memberUrl, {
+        // Use Drive v2 permission member API with correct parameters
+        const memberUrl = `https://open.feishu.cn/open-apis/drive/v1/permissions/${documentId}/members?type=docx`;
+        const memberResponse = await fetch(memberUrl, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            token: documentId,
-            type: 'docx',
             members: [
               {
                 member_type: 'user',
@@ -920,7 +913,12 @@ async function executeCreateFeishuDoc(
             ]
           }),
         });
-        console.log(`[FeishuDoc] Granted explicit full_access permission to user: ${userOpenId}`);
+        if (memberResponse.ok) {
+          console.log(`[FeishuDoc] Granted explicit full_access permission to user: ${userOpenId}`);
+        } else {
+          const errData = await memberResponse.json().catch(() => null);
+          console.error(`[FeishuDoc] Failed to grant member permission:`, memberResponse.status, errData);
+        }
       } catch (memberErr) {
         console.error('[FeishuDoc] Failed to grant member permission:', memberErr);
       }
